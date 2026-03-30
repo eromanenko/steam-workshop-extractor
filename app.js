@@ -201,8 +201,12 @@ function extractMeta(data) {
 
 // ─── CORS-aware Fetcher ───────────────────────────────────────
 // Steam API blocks browser requests directly; we fall back to public proxies.
+// Steam API blocks browser requests directly.
+// On Netlify, we use a native proxy redirect (see netlify.toml).
+// Locally, we fall back to several public CORS proxies.
 const CORS_PROXIES = [
   url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://corsproxy.org/?${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
 ];
 
@@ -229,8 +233,13 @@ async function getWorkshopFileUrl(workshopId) {
   const body = new URLSearchParams({ itemcount: 1, 'publishedfileids[0]': workshopId });
 
   let data;
-  // Try direct first (blocked by CORS in browsers), then each proxy
-  const attempts = [apiUrl, ...CORS_PROXIES.map(p => p(apiUrl))];
+  // Sequence of attempts:
+  // 1. Internal Netlify proxy (path defined in netlify.toml)
+  // 2. Direct Steam API (usually fails in browser due to CORS)
+  // 3. Various public CORS proxies
+  const internalProxy = '/steam-api/ISteamRemoteStorage/GetPublishedFileDetails/v1/';
+  const attempts = [internalProxy, apiUrl, ...CORS_PROXIES.map(p => p(apiUrl))];
+
   for (const fetchUrl of attempts) {
     try {
       const res = await fetch(fetchUrl, {

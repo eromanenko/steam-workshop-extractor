@@ -1,0 +1,11 @@
+[[redirects]]
+  from = "/steam-api/*"
+  to = "https://api.steampowered.com/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/steam-usercontent/*"
+  to = "https://*.steamusercontent.com/:splat"
+  status = 200
+  force = true
