@@ -358,6 +358,24 @@ async function processFile(file) {
       const text = new TextDecoder('utf-8').decode(buffer);
       bsonData = JSON.parse(text);
       currentBuffer = null; // No BSON buffer for JSON files
+    } else if (file.name.toLowerCase().endsWith('.ttsmod')) {
+      setLoading('Unpacking .ttsmod...');
+      const jszip = new JSZip();
+      const zip = await jszip.loadAsync(buffer);
+      let jsonFile = null;
+      for (const [filename, fileData] of Object.entries(zip.files)) {
+        if (!fileData.dir && filename.toLowerCase().endsWith('.json')) {
+          jsonFile = fileData;
+          break;
+        }
+      }
+      if (!jsonFile) {
+        throw new Error('No .json configuration file found inside this .ttsmod archive.');
+      }
+      setLoading('Parsing JSON from .ttsmod...');
+      const text = await jsonFile.async('string');
+      bsonData = JSON.parse(text);
+      currentBuffer = null;
     } else {
       setLoading('Parsing BSON...');
       bsonData = parseBSON(buffer);
@@ -368,7 +386,7 @@ async function processFile(file) {
     renderResults(bsonData, null);
   } catch (e) {
     console.error(e);
-    showError('File read error', e.message + '\n\nMake sure this is a WorkshopUpload BSON or JSON file.');
+    showError('File read error', e.message + '\n\nMake sure this is a WorkshopUpload BSON, JSON, or .ttsmod file.');
   }
 }
 

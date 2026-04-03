@@ -107,6 +107,12 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  cursor: pointer;
+  transition: opacity var(--transition);
+}
+
+.logo:hover {
+  opacity: 0.8;
 }
 
 .logo-icon {
