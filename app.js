@@ -141,6 +141,7 @@ function classifyUrl(url) {
   if (AUDIO_EXTS.test(url)) return 'audio';
   // Steam CDN UGC paths are always images (card faces, textures, etc.) even without an extension
   if (/steamusercontent\.com\/ugc\//i.test(url)) return 'image';
+  if (/steamusercontent-a\.akamaihd\.net\/ugc\//i.test(url)) return 'image';
   if (/steamuserimages\.akamaized\.net/i.test(url)) return 'image';
   if (url.startsWith('http')) return 'url';
   return 'other';
@@ -553,7 +554,7 @@ function createAssetCard(asset, idx) {
       ${previewHtml}
       <a class="asset-url" href="${escHtml(asset.url)}" target="_blank" title="${escHtml(asset.url)}">${escHtml(truncate(asset.url, 80))}</a>
       <div class="asset-actions">
-        <button class="asset-btn asset-btn-copy" id="${safeId}-copy" onclick="copyUrl(${JSON.stringify(asset.url)}, '${safeId}-copy')">
+        <button class="asset-btn asset-btn-copy" id="${safeId}-copy" onclick="copyUrl(${escHtml(JSON.stringify(asset.url))}, '${safeId}-copy')">
           <svg viewBox="0 0 16 16" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M3 10V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
           Copy
         </button>
