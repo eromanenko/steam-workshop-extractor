@@ -54,7 +54,7 @@
           </svg>
         </div>
         <div class="logo-text">
-          <span class="logo-title">Workshop Extractor</span>
+          <span class="logo-title">Workshop Extractor <span style="font-size: 0.75em; color: var(--text-muted); font-weight: 500;">v1.0.3</span></span>
           <span class="logo-sub">Tabletop Simulator</span>
         </div>
       </div>
@@ -138,7 +138,8 @@
           </div>
           <p class="drop-title">Drop <code>WorkshopUpload</code> file here</p>
           <p class="drop-subtitle">BSON, JSON, or .ttsmod format — or click to browse</p>
-          <input type="file" id="file-input" accept=".json,.bson,.ttsmod,application/json" onchange="handleFileSelect(event)" style="display: none;" />
+          <input type="file" id="file-input" accept=".json,.bson,.ttsmod,application/json"
+            onchange="handleFileSelect(event)" style="display: none;" />
         </div>
       </div>
     </section>

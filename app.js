@@ -146,6 +146,27 @@ function classifyUrl(url) {
   return 'other';
 }
 
+// ─── Steam URL Updater ──────────────────────────────────────────
+function fixSteamUrls(obj) {
+  if (typeof obj === 'string') {
+    return obj.replace(/http:\/\/cloud-3\.steamusercontent\.com\//gi, 'https://steamusercontent-a.akamaihd.net/');
+  }
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      obj[i] = fixSteamUrls(obj[i]);
+    }
+    return obj;
+  }
+  if (obj && typeof obj === 'object' && !obj._binary && !obj._oid && !(obj instanceof Date)) {
+    for (const key in obj) {
+      if (Object.hasOwn(obj, key)) {
+        obj[key] = fixSteamUrls(obj[key]);
+      }
+    }
+  }
+  return obj;
+}
+
 // ─── URL Extractor ────────────────────────────────────────────
 // Recursively walks the parsed BSON tree and collects all URLs.
 const URL_FIELDS = new Set([
@@ -305,7 +326,8 @@ async function fetchFromUrl() {
     currentBuffer = await res.arrayBuffer();
 
     setLoading('Parsing BSON...');
-    const bsonData = parseBSON(currentBuffer);
+    let bsonData = parseBSON(currentBuffer);
+    bsonData = fixSteamUrls(bsonData);
 
     // Enrich parsed data with workshop metadata (kept in internal fields)
     if (workshopInfo) {
@@ -356,7 +378,7 @@ async function processFile(file) {
     if (file.name.toLowerCase().endsWith('.json')) {
       setLoading('Parsing JSON...');
       const text = new TextDecoder('utf-8').decode(buffer);
-      bsonData = JSON.parse(text);
+      bsonData = fixSteamUrls(JSON.parse(text));
       currentBuffer = null; // No BSON buffer for JSON files
     } else if (file.name.toLowerCase().endsWith('.ttsmod')) {
       setLoading('Unpacking .ttsmod...');
@@ -374,11 +396,11 @@ async function processFile(file) {
       }
       setLoading('Parsing JSON from .ttsmod...');
       const text = await jsonFile.async('string');
-      bsonData = JSON.parse(text);
+      bsonData = fixSteamUrls(JSON.parse(text));
       currentBuffer = null;
     } else {
       setLoading('Parsing BSON...');
-      bsonData = parseBSON(buffer);
+      bsonData = fixSteamUrls(parseBSON(buffer));
       currentBuffer = buffer; // Store original BSON
     }
 
