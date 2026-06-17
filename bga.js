@@ -45,6 +45,11 @@ async function fetchFromUrl() {
   const input = document.getElementById('url-input').value.trim();
   if (!input) { showToast('Enter a Board Game Arena URL', 'error'); return; }
 
+  // Update URL for sharing
+  const urlParams = new URL(window.location);
+  urlParams.searchParams.set('url', input);
+  window.history.pushState({}, '', urlParams);
+
   showSection('loading');
 
   try {
@@ -294,7 +299,8 @@ async function downloadImagesZip() {
     const shortUrl = asset.url.split('/').pop() || `image_${i}`;
     const extMatch = asset.url.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
     const ext      = extMatch ? extMatch[1].toLowerCase() : 'png';
-    const filename = `${String(i + 1).padStart(3, '0')}_${shortUrl.slice(0, 40).replace(/[^a-zA-Z0-9._-]/g, '_')}.${ext}`;
+    const baseName = shortUrl.replace(/\.(png|jpg|jpeg|gif|webp|bmp)(\?.*)?$/i, '').slice(0, 40).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `${String(i + 1).padStart(3, '0')}_${baseName}.${ext}`;
 
     setProgress(i, images.length, `Downloading: ${shortUrl} (${i + 1}/${images.length})`);
 
@@ -457,3 +463,13 @@ function showToast(message, type = 'info') {
     setTimeout(() => toast.remove(), 300);
   }, 3000);
 }
+
+// ─── Initialization ───────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(window.location.search);
+  const targetUrl = params.get('url');
+  if (targetUrl) {
+    document.getElementById('url-input').value = targetUrl;
+    fetchFromUrl();
+  }
+});
