@@ -12,6 +12,14 @@
 
 [[redirects]]
   from = "/bga-proxy/*"
-  to = "https://boardgamearena.com/:splat"
+  to = "https://en.boardgamearena.com/:splat"
   status = 200
   force = true
+
+[[edge_functions]]
+  function = "og-image"
+  path = "/"
+
+[[edge_functions]]
+  function = "og-image"
+  path = "/index.html"

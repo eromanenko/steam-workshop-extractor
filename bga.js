@@ -10,7 +10,7 @@ let allAssets = [];
 
 // ─── CORS-aware Fetcher ───────────────────────────────────────
 const CORS_PROXIES = [
-  { url: url => url.replace(/^https?:\/\/boardgamearena\.com\//i, '/bga-proxy/'), type: 'text' },
+  { url: url => url.replace(/^https?:\/\/(?:[a-z0-9-]+\.)?boardgamearena\.com\//i, '/bga-proxy/'), type: 'text' },
   { url: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, type: 'text' },
   { url: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, type: 'json' },
   { url: url => `https://corsproxy.io/?${encodeURIComponent(url)}`, type: 'text' }
