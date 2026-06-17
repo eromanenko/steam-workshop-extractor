@@ -9,3 +9,9 @@
   to = "https://*.steamusercontent.com/:splat"
   status = 200
   force = true
+
+[[redirects]]
+  from = "/bga-proxy/*"
+  to = "https://boardgamearena.com/:splat"
+  status = 200
+  force = true

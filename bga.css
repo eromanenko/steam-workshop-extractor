@@ -1,0 +1,104 @@
+/* === BGA Light Theme Overrides === */
+.bga-theme {
+  --bg-dark: #f8fafc;        /* Light grayish-blue for main background */
+  --bg-card: #ffffff;        /* Pure white for cards */
+  --bg-card-hover: #f1f5f9;  /* Slight darker white for hover */
+  --bg-card-2: #f1f5f9;      /* Background for inner sections */
+  --border: rgba(0, 0, 0, 0.1); 
+  --border-active: rgba(59, 130, 246, 0.4); 
+  
+  --accent-1: #3b82f6;       /* Bright blue */
+  --accent-2: #8b5cf6;       /* Purple */
+  --accent-3: #10b981;       /* Green */
+  --accent-4: #f59e0b;       /* Amber */
+  --accent-gradient: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%);
+  
+  --text-primary: #0f172a;   /* Very dark slate for primary text */
+  --text-secondary: #475569; /* Slate for secondary text */
+  --text-muted: #94a3b8;     /* Light slate for muted text */
+  
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.05);
+  --shadow-glow: 0 0 24px rgba(59, 130, 246, 0.2);
+}
+
+/* Adjust the animated orbs for light theme (make them slightly more visible since background is bright) */
+.bga-theme .orb {
+  opacity: 0.3;
+}
+
+/* Specific component tweaks for light theme */
+.bga-theme .app-header {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.bga-theme .url-input-card,
+.bga-theme .file-drop-zone,
+.bga-theme .meta-card,
+.bga-theme .cutter-drop-zone {
+  background: var(--bg-card);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+}
+
+.bga-theme .url-input,
+.bga-theme .url-input::placeholder {
+  color: var(--text-primary);
+}
+
+.bga-theme .input-wrapper {
+  background: var(--bg-dark);
+}
+
+.bga-theme .section-title code,
+.bga-theme .drop-title code {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-1);
+}
+
+.bga-theme .asset-card {
+  background: var(--bg-card);
+  border-color: var(--border);
+}
+
+.bga-theme .asset-card:hover {
+  background: var(--bg-card-hover);
+}
+
+.bga-theme .asset-btn {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text-secondary);
+}
+
+.bga-theme .asset-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text-primary);
+}
+
+.bga-theme .copy-all-btn {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+.bga-theme .copy-all-btn:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.bga-theme .zip-modal {
+  background: var(--bg-card);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+}
+
+/* Make cutter drop zone text legible */
+.bga-theme .cutter-subtitle {
+  color: var(--text-secondary);
+}
+
+/* Spinner adjustment */
+.bga-theme .spinner {
+  border: 2.5px solid rgba(0, 0, 0, 0.1);
+  border-top-color: var(--accent-1);
+}
+
+.bga-theme .spinner-inner {
+  border: 2px solid rgba(0, 0, 0, 0.05);
+  border-bottom-color: var(--accent-2);
+}
