@@ -299,7 +299,7 @@ async function downloadImagesZip() {
     const shortUrl = asset.url.split('/').pop() || `image_${i}`;
     const extMatch = asset.url.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
     const ext      = extMatch ? extMatch[1].toLowerCase() : 'png';
-    const baseName = shortUrl.replace(/\.(png|jpg|jpeg|gif|webp|bmp)(\?.*)?$/i, '').slice(0, 40).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const baseName = shortUrl.replace(/\.(png|jpg|jpeg|gif|webp|bmp)(\?.*)?$/i, '').slice(0, 40).replace(/[^\p{L}\p{N}_-]/gu, '_');
     const filename = `${String(i + 1).padStart(3, '0')}_${baseName}.${ext}`;
 
     setProgress(i, images.length, `Downloading: ${shortUrl} (${i + 1}/${images.length})`);

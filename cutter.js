@@ -352,7 +352,7 @@ async function downloadCardsZip() {
 
   const deck = cutterDecks.find(d => d.deckKey === activeDeckKey);
   const rawName = deck?.deckName || `deck_${activeDeckKey}`;
-  const safeName = rawName.replace(/[^a-zA-Z0-9_\-]/g, '_').replace(/_+/g, '_').slice(0, 40);
+  const safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
   const sideSuffix = activeSide; // 'face' or 'back'
 
   const btn = document.getElementById('cutter-download-btn');

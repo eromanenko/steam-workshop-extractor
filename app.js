@@ -187,6 +187,20 @@ function extractUrls(obj, parentKey, collected) {
       if (!collected.has(obj)) {
         collected.set(obj, { url: obj, field: key, type: classifyUrl(obj) });
       }
+    } else if (obj.includes('http://') || obj.includes('https://')) {
+      // Find URLs embedded inside text, like LuaScript
+      const urlRegex = /https?:\/\/[^\s'"\\]+/g;
+      let match;
+      while ((match = urlRegex.exec(obj)) !== null) {
+        let foundUrl = match[0];
+        // Clean up common trailing punctuation if matched
+        foundUrl = foundUrl.replace(/[.,;:})\]]$/, '');
+        const key = (parentKey || 'Text') + '_embedded';
+        if (INTERNAL_FIELDS.has(parentKey)) continue; // skip internal metadata fields
+        if (!collected.has(foundUrl)) {
+          collected.set(foundUrl, { url: foundUrl, field: key, type: classifyUrl(foundUrl) });
+        }
+      }
     }
     return;
   }
@@ -218,6 +232,7 @@ function extractMeta(data) {
     version:  data.VersionNumber || data.Version || '—',
     date:     data.Date || (data.EpochTime ? new Date(data.EpochTime * 1000).toLocaleString('en-US') : '—'),
     gameMode: data.GameMode || '—',
+    fileSize: data._fileSize ? formatBytes(data._fileSize) : '—',
   };
 }
 
@@ -334,6 +349,7 @@ async function fetchFromUrl() {
     if (workshopInfo) {
       if (workshopInfo.title)       bsonData._workshopTitle = workshopInfo.title;
       if (workshopInfo.preview_url) bsonData._previewUrl    = workshopInfo.preview_url;
+      if (workshopInfo.file_size)   bsonData._fileSize      = workshopInfo.file_size;
       bsonData._workshopId  = workshopId;
       bsonData._workshopUrl = `https://steamcommunity.com/sharedfiles/filedetails/?id=${workshopId}`;
     }
@@ -342,7 +358,13 @@ async function fetchFromUrl() {
 
   } catch (e) {
     console.error(e);
-    showError('Failed to load mod', e.message);
+    let msg = e.message;
+    let isHtml = false;
+    if (msg.includes('result=9') || msg.includes('result=16')) {
+      msg += `<br><br>Try checking if this mod is cached here:<br><a href="http://steamworkshop.download/download/view/${workshopId}" target="_blank" style="color:var(--accent-2);text-decoration:underline;">steamworkshop.download/download/view/${workshopId}</a><br>Download the file from there and drop it here.`;
+      isHtml = true;
+    }
+    showError('Failed to load mod', msg, isHtml);
   }
 }
 
@@ -427,6 +449,8 @@ function renderResults(data, workshopId) {
   document.getElementById('meta-mode').textContent      = meta.gameMode;
   document.getElementById('meta-workshop-id').textContent =
     workshopId || data._workshopId || '—';
+  const fileSizeEl = document.getElementById('meta-file-size');
+  if (fileSizeEl) fileSizeEl.textContent = meta.fileSize;
 
   // Thumbnail (preview image from Steam API or table background)
   const thumb = data._previewUrl || data.TableURL || null;
@@ -639,7 +663,7 @@ async function downloadImagesZip() {
     const shortUrl = asset.url.split('/').pop() || `image_${i}`;
     const extMatch = asset.url.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
     const ext      = extMatch ? extMatch[1].toLowerCase() : 'jpg';
-    const filename = `${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^a-zA-Z0-9._-]/g, '_')}.${ext}`;
+    const filename = `${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}.${ext}`;
 
     setProgress(i, images.length, `Downloading: ${asset.field} (${i + 1}/${images.length})`);
 
@@ -705,7 +729,7 @@ async function downloadImagesZip() {
 
   try {
     const modName  = (currentData?.SaveName || currentData?._workshopTitle || 'workshop')
-      .replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+      .replace(/[^\p{L}\p{N}_-]/gu, '_').slice(0, 40);
     const zipBlob  = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
     const a        = document.createElement('a');
     a.href         = URL.createObjectURL(zipBlob);
@@ -754,9 +778,11 @@ function setLoading(msg) {
   document.getElementById('loading-message').textContent = msg;
 }
 
-function showError(title, msg) {
+function showError(title, msg, isHtml = false) {
   document.getElementById('error-title').textContent   = title;
-  document.getElementById('error-message').textContent = msg;
+  const msgEl = document.getElementById('error-message');
+  if (isHtml) msgEl.innerHTML = msg;
+  else msgEl.textContent = msg;
   showSection('error');
 }
 
@@ -910,7 +936,17 @@ document.getElementById('url-input').addEventListener('paste', () => {
     }
   }, 50);
 });
-// ─── Auto-load from URL ───────────────────────────────────────
+
+function formatBytes(bytes, decimals = 2) {
+  if (!+bytes) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
+
+// ─── Auto-load from URL ──────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   const params = new URLSearchParams(window.location.search);
   const idFromUrl = params.get('id');
