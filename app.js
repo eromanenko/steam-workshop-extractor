@@ -733,7 +733,8 @@ async function downloadImagesZip() {
     const zipBlob  = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
     const a        = document.createElement('a');
     a.href         = URL.createObjectURL(zipBlob);
-    a.download     = `${modName}_images.zip`;
+    const wId      = currentData?._workshopId;
+    a.download     = wId ? `${modName}_images_[tts${wId}].zip` : `${modName}_images.zip`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -841,8 +842,10 @@ async function copyAllUrls() {
 
 function saveJson() {
   if (!currentData) return;
-  const filename = (currentData._workshopTitle || currentData._localFile || 'workshop_mod')
-    .replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.json';
+  let filename = (currentData._workshopTitle || currentData._localFile || 'workshop_mod')
+    .replace(/[^\p{L}\p{N}_\-]/gu, '_').toLowerCase();
+  if (currentData._workshopId) filename += `_[tts${currentData._workshopId}]`;
+  filename += '.json';
     
   const json = JSON.stringify(currentData, (k, v) => {
     if (v instanceof Date) return v.toISOString();
@@ -866,8 +869,10 @@ function saveBson() {
     showToast('BSON source not available', 'error');
     return;
   }
-  const filename = (currentData._workshopTitle || currentData._localFile || 'workshop_mod')
-    .replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.bson';
+  let filename = (currentData._workshopTitle || currentData._localFile || 'workshop_mod')
+    .replace(/[^\p{L}\p{N}_\-]/gu, '_').toLowerCase();
+  if (currentData._workshopId) filename += `_[tts${currentData._workshopId}]`;
+  filename += '.bson';
     
   const blob = new Blob([currentBuffer], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
