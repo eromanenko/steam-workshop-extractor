@@ -298,9 +298,9 @@ async function downloadImagesZip() {
     const asset    = images[i];
     const shortUrl = asset.url.split('/').pop() || `image_${i}`;
     const extMatch = asset.url.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
-    const ext      = extMatch ? extMatch[1].toLowerCase() : 'png';
+    const fallbackExt = extMatch ? extMatch[1].toLowerCase() : 'png';
     const baseName = shortUrl.replace(/\.(png|jpg|jpeg|gif|webp|bmp)(\?.*)?$/i, '').slice(0, 40).replace(/[^\p{L}\p{N}_-]/gu, '_');
-    const filename = `${String(i + 1).padStart(3, '0')}_${baseName}.${ext}`;
+    const baseFilename = `${String(i + 1).padStart(3, '0')}_${baseName}`;
 
     setProgress(i, images.length, `Downloading: ${shortUrl} (${i + 1}/${images.length})`);
 
@@ -316,7 +316,23 @@ async function downloadImagesZip() {
       }
 
       if (blob && blob.size > 0) {
-        zip.file(filename, blob);
+        const buffer = await blob.arrayBuffer();
+        const view = new Uint8Array(buffer.slice(0, 10));
+        let realExt = fallbackExt;
+        
+        if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) realExt = 'png';
+        else if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) realExt = 'jpg';
+        else if (view[0] === 0x25 && view[1] === 0x50 && view[2] === 0x44 && view[3] === 0x46) realExt = 'pdf';
+        else if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) realExt = 'mp3';
+        else if (view[0] === 0x55 && view[1] === 0x6E && view[2] === 0x69 && view[3] === 0x74 && view[4] === 0x79) realExt = 'unity3d';
+        else if (view[0] === 0x4F && view[1] === 0x67 && view[2] === 0x67 && view[3] === 0x53) realExt = 'ogg';
+        else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46) realExt = 'wav';
+        else {
+          const str = String.fromCharCode(...view);
+          if (str.startsWith('v ') || str.startsWith('# ') || str.startsWith('vt ') || str.startsWith('vn ') || str.includes('mtllib')) realExt = 'obj';
+        }
+
+        zip.file(`${baseFilename}.${realExt}`, blob);
         done++;
       } else {
         skipped.push({ url: asset.url, reason: 'Fetch failed (CORS blocked)' });
