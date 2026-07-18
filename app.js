@@ -347,7 +347,7 @@ async function fetchFromUrl() {
 
     // Enrich parsed data with workshop metadata (kept in internal fields)
     if (workshopInfo) {
-      if (workshopInfo.title)       bsonData._workshopTitle = workshopInfo.title;
+      if (workshopInfo.title)       bsonData._workshopTitle = workshopInfo.title.replace(/\\[[0-9a-f]{6}\\]|\\[-\\]/gi, '');
       if (workshopInfo.preview_url) bsonData._previewUrl    = workshopInfo.preview_url;
       if (workshopInfo.file_size)   bsonData._fileSize      = workshopInfo.file_size;
       bsonData._workshopId  = workshopId;
@@ -500,9 +500,11 @@ function updateActionBar(imageCount, totalCount) {
   // ZIP button
   const zipCountEl = document.getElementById('zip-count');
   const zipBtn     = document.getElementById('download-zip-btn');
+  const zipStreamBtn = document.getElementById('download-zip-stream-btn');
   const zipLabel   = document.getElementById('zip-btn-label');
   if (zipCountEl) zipCountEl.textContent = imageCount;
   if (zipBtn)     zipBtn.disabled = imageCount === 0;
+  if (zipStreamBtn) zipStreamBtn.disabled = imageCount === 0;
   if (zipLabel)   zipLabel.textContent = imageCount > 0 ? 'Download Images (ZIP)' : 'No images found';
 
   // Open-all button (shows count for current filter)
@@ -776,6 +778,171 @@ function cancelZipDownload() {
   zipCancelled = true;
 }
 
+async function downloadImagesStreamingZip() {
+  if (!window.showSaveFilePicker) {
+    showToast('Your browser does not support streaming ZIP downloads. Please update Chrome/Edge.', 'error');
+    return;
+  }
+
+  const images = allAssets.filter(a => a.type === 'image');
+  if (images.length === 0) {
+    showToast('No images found in assets', 'error');
+    return;
+  }
+
+  zipCancelled = false;
+  const overlay    = document.getElementById('zip-overlay');
+  const statusEl   = document.getElementById('zip-status');
+  const fillEl     = document.getElementById('zip-progress-fill');
+  const progressEl = document.getElementById('zip-progress-text');
+  const zipBtn     = document.getElementById('download-zip-stream-btn');
+  const oldZipBtn  = document.getElementById('download-zip-btn');
+
+  overlay.classList.remove('hidden');
+  zipBtn.disabled = true;
+  oldZipBtn.disabled = true;
+
+  const setProgress = (i, total, msg) => {
+    const pct = total > 0 ? Math.round((i / total) * 100) : 0;
+    fillEl.style.width     = pct + '%';
+    progressEl.textContent = `${i} / ${total}`;
+    if (msg) statusEl.textContent = msg;
+  };
+
+  setProgress(0, images.length, 'Requesting file access...');
+
+  let fileHandle;
+  try {
+    const filename = (currentData._workshopTitle || currentData._localFile || 'workshop_mod')
+        .replace(/[^\p{L}\p{N}._-]/gu, '_').slice(0, 40) + '_assets.zip';
+    fileHandle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'ZIP Archive', accept: { 'application/zip': ['.zip'] } }]
+    });
+  } catch (e) {
+    overlay.classList.add('hidden');
+    zipBtn.disabled = false;
+    oldZipBtn.disabled = false;
+    if (e.name !== 'AbortError') showToast('File selection failed', 'error');
+    return;
+  }
+
+  setProgress(0, images.length, 'Loading ZIP engine...');
+
+  const { downloadZip } = await import('https://cdn.jsdelivr.net/npm/client-zip/index.js');
+  const skipped = [];
+  let done = 0;
+
+  async function* yieldFiles() {
+    for (let i = 0; i < images.length; i++) {
+      if (zipCancelled) break;
+      const asset = images[i];
+      const shortUrl = asset.url.split('/').pop() || `image_${i}`;
+      const extMatch = asset.url.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
+      const fallbackExt = extMatch ? extMatch[1].toLowerCase() : 'jpg';
+      const baseFilename = `${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}`;
+
+      setProgress(i, images.length, `Streaming: ${asset.field} (${i + 1}/${images.length})`);
+
+      try {
+        let res = null;
+        const candidates = [asset.url, ...CORS_PROXIES.map(p => p(asset.url))];
+        for (const tryUrl of candidates) {
+          if (zipCancelled) break;
+          try {
+            const tryRes = await fetch(tryUrl, { signal: AbortSignal.timeout(15000) });
+            if (tryRes.ok) { res = tryRes; break; }
+          } catch {}
+        }
+
+        if (res && res.body) {
+          const reader = res.body.getReader();
+          const { value: firstChunk, done: readerDone } = await reader.read();
+
+          let realExt = fallbackExt;
+          if (firstChunk && firstChunk.length >= 10) {
+            const view = firstChunk;
+            if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) realExt = 'png';
+            else if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) realExt = 'jpg';
+            else if (view[0] === 0x25 && view[1] === 0x50 && view[2] === 0x44 && view[3] === 0x46) realExt = 'pdf';
+            else if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) realExt = 'mp3';
+            else if (view[0] === 0x55 && view[1] === 0x6E && view[2] === 0x69 && view[3] === 0x74 && view[4] === 0x79) realExt = 'unity3d';
+            else if (view[0] === 0x4F && view[1] === 0x67 && view[2] === 0x67 && view[3] === 0x53) realExt = 'ogg';
+            else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46) realExt = 'wav';
+            else {
+              const str = String.fromCharCode(...view.slice(0, 10));
+              if (str.startsWith('v ') || str.startsWith('# ') || str.startsWith('vt ') || str.startsWith('vn ') || str.includes('mtllib')) realExt = 'obj';
+            }
+          }
+
+          const stream = new ReadableStream({
+            async start(controller) {
+              if (firstChunk) controller.enqueue(firstChunk);
+              if (readerDone) controller.close();
+            },
+            async pull(controller) {
+              try {
+                const { value, done } = await reader.read();
+                if (done) controller.close();
+                else controller.enqueue(value);
+              } catch(e) {
+                controller.error(e);
+              }
+            },
+            cancel(reason) {
+              reader.cancel(reason);
+            }
+          });
+
+          yield {
+            name: `${baseFilename}.${realExt}`,
+            lastModified: new Date(),
+            input: stream
+          };
+          done++;
+        } else {
+          skipped.push({ field: asset.field, url: asset.url, reason: 'Fetch failed (CORS blocked)' });
+        }
+      } catch (e) {
+        skipped.push({ field: asset.field, url: asset.url, reason: e.message });
+      }
+      setProgress(i + 1, images.length);
+    }
+
+    const manifest = [
+      'Steam Workshop Extractor — Image Manifest',
+      '==========================================',
+      `Total images : ${images.length}`,
+      `Downloaded   : ${done}`,
+      `Skipped      : ${skipped.length}`,
+      '',
+      '--- Downloaded ---',
+      ...images.filter(a => !skipped.some(s => s.url === a.url)).map(a => `[${a.field}] ${a.url}`),
+      '',
+      '--- Skipped (open these manually) ---',
+      ...skipped.map(s => `[${s.field}] ${s.url}  // ${s.reason}`),
+    ];
+    yield { name: 'manifest.txt', lastModified: new Date(), input: manifest.join('\n') };
+  }
+
+  try {
+    const writable = await fileHandle.createWritable();
+    setProgress(0, images.length, 'Generating ZIP Stream...');
+    const response = downloadZip(yieldFiles());
+    await response.body.pipeTo(writable);
+
+    overlay.classList.add('hidden');
+    zipBtn.disabled = false;
+    oldZipBtn.disabled = false;
+    showToast(skipped.length > 0 ? `Streaming complete. Saved ${done} files (${skipped.length} skipped).` : `Streaming complete. Saved ${done} files.`, 'success');
+  } catch (e) {
+    overlay.classList.add('hidden');
+    zipBtn.disabled = false;
+    oldZipBtn.disabled = false;
+    showToast('ZIP Streaming Error: ' + e.message, 'error');
+  }
+}
+
 // ─── UI Helpers ───────────────────────────────────────────────
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -958,9 +1125,9 @@ document.getElementById('url-input').addEventListener('paste', () => {
   }, 50);
 });
 
-function formatBytes(bytes, decimals = 2) {
+function formatBytes(bytes, decimals = 3) {
   if (!+bytes) return '0 Bytes';
-  const k = 1024;
+  const k = 1000;
   const dm = decimals < 0 ? 0 : decimals;
   const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
