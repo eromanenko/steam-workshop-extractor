@@ -223,15 +223,20 @@ function getAssets(data) {
 }
 
 // ─── Metadata Extractor ───────────────────────────────────────
+function cleanTags(str) {
+  if (typeof str !== 'string') return str;
+  return str.replace(/\[[0-9a-f]{6}\]|\[-\]/gi, '');
+}
+
 function extractMeta(data) {
-  const saveName = data.SaveName;
+  const saveName = cleanTags(data.SaveName);
   const isBlank = !saveName || saveName === 'None';
   return {
     // Prefer SaveName if meaningful, fall back to Steam workshop title or game mode
-    gameName: !isBlank ? saveName : (data._workshopTitle || data.GameMode || '—'),
+    gameName: !isBlank ? saveName : cleanTags(data._workshopTitle || data.GameMode || '—'),
     version:  data.VersionNumber || data.Version || '—',
     date:     data.Date || (data.EpochTime ? new Date(data.EpochTime * 1000).toLocaleString('en-US') : '—'),
-    gameMode: data.GameMode || '—',
+    gameMode: cleanTags(data.GameMode) || '—',
     fileSize: data._fileSize ? formatBytes(data._fileSize) : '—',
   };
 }

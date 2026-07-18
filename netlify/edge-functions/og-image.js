@@ -33,7 +33,7 @@ export default async (request, context) => {
     // If we successfully got data from Steam, inject it into the HTML
     if (fileInfo && fileInfo.result === 1) {
       if (fileInfo.title) {
-        const cleanTitle = fileInfo.title.replace(/\\[[0-9a-f]{6}\\]|\\[-\\]/gi, '');
+        const cleanTitle = fileInfo.title.replace(/\[[0-9a-f]{6}\]|\[-\]/gi, '');
         // Replace og:title
         html = html.replace(
           /<meta property="og:title" content="[^"]*" \/>/i,
