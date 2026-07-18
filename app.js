@@ -928,6 +928,17 @@ async function downloadImagesStreamingZip() {
       ...skipped.map(s => `[${s.field}] ${s.url}  // ${s.reason}`),
     ];
     yield { name: 'manifest.txt', lastModified: new Date(), input: manifest.join('\n') };
+
+    if (skipped.length > 0) {
+      const skippedTxt = [
+        '--- SKIPPED FILES ---',
+        'These files could not be downloaded automatically (likely blocked by CORS).',
+        'You can open these URLs manually in your browser and save them.',
+        '',
+        ...skipped.map(s => `[${s.field}] ${s.url}  // Error: ${s.reason}`)
+      ];
+      yield { name: '!skipped.txt', lastModified: new Date(), input: skippedTxt.join('\n') };
+    }
   }
 
   try {
