@@ -320,7 +320,7 @@ async function downloadImagesZip() {
 
       if (blob && blob.size > 0) {
         const buffer = await blob.arrayBuffer();
-        const view = new Uint8Array(buffer.slice(0, 10));
+        const view = new Uint8Array(buffer.slice(0, 12));
         let realExt = fallbackExt;
         
         if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) realExt = 'png';
@@ -329,9 +329,12 @@ async function downloadImagesZip() {
         else if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) realExt = 'mp3';
         else if (view[0] === 0x55 && view[1] === 0x6E && view[2] === 0x69 && view[3] === 0x74 && view[4] === 0x79) realExt = 'unity3d';
         else if (view[0] === 0x4F && view[1] === 0x67 && view[2] === 0x67 && view[3] === 0x53) realExt = 'ogg';
-        else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46) realExt = 'wav';
+        else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46) {
+          if (view.length >= 12 && view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) realExt = 'webp';
+          else realExt = 'wav';
+        }
         else {
-          const str = String.fromCharCode(...view);
+          const str = String.fromCharCode(...view.slice(0, 10));
           if (str.startsWith('v ') || str.startsWith('# ') || str.startsWith('vt ') || str.startsWith('vn ') || str.includes('mtllib')) realExt = 'obj';
         }
 
