@@ -818,8 +818,10 @@ async function downloadImagesStreamingZip() {
 
   let fileHandle;
   try {
-    const filename = (currentData._workshopTitle || currentData._localFile || 'workshop_mod')
-        .replace(/[^\p{L}\p{N}._-]/gu, '_').slice(0, 40) + '_assets.zip';
+    const modName = (currentData._workshopTitle || currentData._localFile || 'workshop_mod')
+        .replace(/[^\p{L}\p{N}._-]/gu, '_').slice(0, 40);
+    const wId = currentData?._workshopId;
+    const filename = wId ? `${modName}_assets_[tts${wId}].zip` : `${modName}_assets.zip`;
     fileHandle = await window.showSaveFilePicker({
       suggestedName: filename,
       types: [{ description: 'ZIP Archive', accept: { 'application/zip': ['.zip'] } }]

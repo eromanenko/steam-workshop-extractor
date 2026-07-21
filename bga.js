@@ -72,7 +72,10 @@ async function fetchFromUrl() {
     let preloadedImages = [];
     if (preloadMatch) {
       try {
-        preloadedImages = JSON.parse(preloadMatch[1]);
+        const matches = preloadMatch[1].match(/['"]([^'"]+)['"]/g);
+        if (matches) {
+          preloadedImages = matches.map(s => s.slice(1, -1));
+        }
       } catch (e) {
         console.warn('Failed to parse g_img_preload array', e);
       }
