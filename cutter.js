@@ -84,15 +84,18 @@ function initCutter(data) {
     checkDeckCors(deck).then(status => {
       deckCorsStatus.set(deck.deckKey, status);
       updateDeckCutButton(deck.deckKey, status);
+      updateCutAllButton(); // refresh Cut All state after each check
     });
   });
-}
+  updateCutAllButton(); // initial state (all checking → disabled)
 
 // ─── CORS Check ───────────────────────────────────────────────
 // Returns 'url' if images can be fetched directly, 'upload' otherwise.
 async function checkDeckCors(deck) {
   const urls = [deck.faceUrl];
-  if (deck.backUrl && deck.backUrl !== deck.faceUrl) urls.push(deck.backUrl);
+  // Only check back URL if it's a unique-back deck (sheet to be sliced).
+  // For non-unique backs the image is a single template — no need to fetch it.
+  if (deck.uniqueBack && deck.backUrl && deck.backUrl !== deck.faceUrl) urls.push(deck.backUrl);
 
   for (const url of urls) {
     if (!url) continue;
@@ -148,6 +151,104 @@ function updateDeckCutButton(deckKey, status) {
   }
 }
 
+// ─── Cut All Decks button state ───────────────────────────────
+function updateCutAllButton() {
+  const btn = document.getElementById('cutter-cut-all-btn');
+  if (!btn) return;
+
+  const urlDecks     = cutterDecks.filter(d => deckCorsStatus.get(d.deckKey) === 'url');
+  const stillChecking = cutterDecks.some(d => deckCorsStatus.get(d.deckKey) === 'checking');
+
+  if (urlDecks.length > 0) {
+    btn.disabled = false;
+    btn.innerHTML = `${cutAllIcon()} Cut all (${urlDecks.length})`;
+  } else if (stillChecking) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spin">⟳</span> Checking…`;
+  } else {
+    btn.disabled = true;
+    btn.innerHTML = `${cutAllIcon()} Cut all (0)`;
+  }
+}
+
+function cutAllIcon() {
+  return `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="5" cy="5" r="2" stroke="currentColor" stroke-width="1.4"/>
+    <circle cx="5" cy="15" r="2" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M7 6.5L17 12M7 13.5L17 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>`;
+}
+
+// ─── Cut All Decks ────────────────────────────────────────────
+// Fetches + slices all decks with 'url' CORS status, packs into one ZIP.
+async function cutAllDecks() {
+  const eligibleDecks = cutterDecks.filter(d => deckCorsStatus.get(d.deckKey) === 'url');
+  if (eligibleDecks.length === 0) { showToast('No decks available for direct cut', 'error'); return; }
+
+  const btn = document.getElementById('cutter-cut-all-btn');
+  const setProgress = label => { if (btn) btn.innerHTML = `<span class="spin">⟳</span> ${label}`; };
+  if (btn) btn.disabled = true;
+
+  const zip = new JSZip();
+  let totalCards  = 0;
+  let failedDecks = 0;
+
+  for (const deck of eligibleDecks) {
+    const rawName  = deck.deckName || `deck_${deck.deckKey}`;
+    const safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
+
+    setProgress(`Cutting ${escHtml(rawName)}…`);
+
+    try {
+      // Face sheet
+      const faceResp = await fetch(deck.faceUrl, { mode: 'cors' });
+      if (!faceResp.ok) throw new Error(`HTTP ${faceResp.status}`);
+      const faceCards = await sliceImageToCards(await faceResp.blob(), deck);
+      for (const { canvas, index } of faceCards) {
+        zip.file(`${safeName}_${String(index + 1).padStart(3, '0')}_face.png`, await canvasToBlob(canvas));
+        totalCards++;
+      }
+
+      // Back sheet — only for unique-back decks
+      if (deck.uniqueBack && deck.backUrl && deck.backUrl !== deck.faceUrl) {
+        setProgress(`Cutting ${escHtml(rawName)} back…`);
+        const backResp = await fetch(deck.backUrl, { mode: 'cors' });
+        if (!backResp.ok) throw new Error(`HTTP ${backResp.status}`);
+        const backCards = await sliceImageToCards(await backResp.blob(), deck);
+        for (const { canvas, index } of backCards) {
+          zip.file(`${safeName}_${String(index + 1).padStart(3, '0')}_back.png`, await canvasToBlob(canvas));
+          totalCards++;
+        }
+      }
+    } catch (e) {
+      console.warn(`Failed to cut deck ${deck.deckKey}:`, e);
+      failedDecks++;
+    }
+  }
+
+  if (totalCards === 0) {
+    showToast('Failed to cut any decks', 'error');
+    updateCutAllButton();
+    return;
+  }
+
+  setProgress('Packing ZIP…');
+  const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+  const a       = document.createElement('a');
+  a.href        = URL.createObjectURL(zipBlob);
+  a.download    = 'all_decks_cards.zip';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+
+  const msg = failedDecks > 0
+    ? `Saved ${totalCards} cards (${failedDecks} deck(s) failed)`
+    : `Saved ${totalCards} cards from ${eligibleDecks.length - failedDecks} deck(s)`;
+  showToast(msg, 'success');
+  updateCutAllButton();
+}
+
 function scissorsIcon() {
   return `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="5" cy="5" r="2" stroke="currentColor" stroke-width="1.4"/>
@@ -179,7 +280,8 @@ async function cutAndDownloadDeck(deckKey) {
     const faceCards = await sliceImageToCards(faceBlob, deck);
 
     let backCards = null;
-    const needsBack = deck.backUrl && deck.backUrl !== deck.faceUrl;
+    // Only slice back if it's a unique-back deck (each card has its own back image on a sheet).
+    const needsBack = deck.uniqueBack && deck.backUrl && deck.backUrl !== deck.faceUrl;
     if (needsBack) {
       if (btn) btn.innerHTML = `<span class="spin">⟳</span> Loading back…`;
       const backResp = await fetch(deck.backUrl, { mode: 'cors' });
@@ -202,7 +304,8 @@ async function uploadAndCutDeck(deckKey) {
   const deck = cutterDecks.find(d => d.deckKey === deckKey);
   if (!deck) return;
 
-  const needsBack = deck.backUrl && deck.backUrl !== deck.faceUrl;
+  // Only prompt for a back sheet if it's a unique-back deck.
+  const needsBack = deck.uniqueBack && deck.backUrl && deck.backUrl !== deck.faceUrl;
 
   try {
     showToast(`Select the FACE sheet for "${deck.deckName}"`, 'success');

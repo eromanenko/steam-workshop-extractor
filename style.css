@@ -1975,4 +1975,56 @@ body {
 .cutter-cut-btn .spin {
   animation: spin 0.8s linear infinite;
   display: inline-block;
-}
+}
+
+/* Actions group inside result bar */
+.cutter-result-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Cut All Decks button */
+.cutter-cut-all-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  background: linear-gradient(135deg, rgba(245,158,11,0.15) 0%, rgba(236,72,153,0.12) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: var(--radius-md);
+  color: #f59e0b;
+  font-family: var(--font-main);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.cutter-cut-all-btn:hover {
+  background: linear-gradient(135deg, rgba(245,158,11,0.25) 0%, rgba(236,72,153,0.2) 100%);
+  border-color: rgba(245, 158, 11, 0.6);
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.2);
+  transform: translateY(-1px);
+}
+
+.cutter-cut-all-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.cutter-cut-all-btn svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.cutter-cut-all-btn .spin {
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+
