@@ -147,6 +147,26 @@ function classifyUrl(url) {
   return 'other';
 }
 
+// ─── File Extension Detector ──────────────────────────────────
+function detectExtensionFromBytes(view, fallbackExt) {
+  if (!view || view.length < 4) return fallbackExt;
+  if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) return 'png';
+  if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) return 'jpg';
+  if (view[0] === 0x25 && view[1] === 0x50 && view[2] === 0x44 && view[3] === 0x46) return 'pdf';
+  if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) return 'mp3';
+  if (view[0] === 0x55 && view[1] === 0x6E && view[2] === 0x69 && view[3] === 0x74 && view[4] === 0x79) return 'unity3d';
+  if (view[0] === 0x4F && view[1] === 0x67 && view[2] === 0x67 && view[3] === 0x53) return 'ogg';
+  if (view[0] === 0x47 && view[1] === 0x49 && view[2] === 0x46) return 'gif';
+  if (view[0] === 0x42 && view[1] === 0x4D) return 'bmp';
+  if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46) {
+    if (view.length >= 12 && view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) return 'webp';
+    return 'wav';
+  }
+  const str = String.fromCharCode(...view.slice(0, Math.min(view.length, 10)));
+  if (str.startsWith('v ') || str.startsWith('# ') || str.startsWith('vt ') || str.startsWith('vn ') || str.includes('mtllib')) return 'obj';
+  return fallbackExt;
+}
+
 // ─── Steam URL Updater ──────────────────────────────────────────
 function fixSteamUrls(obj) {
   if (typeof obj === 'string') {
@@ -689,22 +709,7 @@ async function downloadImagesZip() {
       if (blob && blob.size > 0) {
         const buffer = await blob.arrayBuffer();
         const view = new Uint8Array(buffer.slice(0, 12));
-        let realExt = fallbackExt;
-        
-        if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) realExt = 'png';
-        else if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) realExt = 'jpg';
-        else if (view[0] === 0x25 && view[1] === 0x50 && view[2] === 0x44 && view[3] === 0x46) realExt = 'pdf';
-        else if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) realExt = 'mp3';
-        else if (view[0] === 0x55 && view[1] === 0x6E && view[2] === 0x69 && view[3] === 0x74 && view[4] === 0x79) realExt = 'unity3d';
-        else if (view[0] === 0x4F && view[1] === 0x67 && view[2] === 0x67 && view[3] === 0x53) realExt = 'ogg';
-        else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46) {
-          if (view.length >= 12 && view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) realExt = 'webp';
-          else realExt = 'wav';
-        }
-        else {
-          const str = String.fromCharCode(...view.slice(0, 10));
-          if (str.startsWith('v ') || str.startsWith('# ') || str.startsWith('vt ') || str.startsWith('vn ') || str.includes('mtllib')) realExt = 'obj';
-        }
+        const realExt = detectExtensionFromBytes(view, fallbackExt);
 
         zip.file(`${baseFilename}.${realExt}`, blob);
         done++;
@@ -871,21 +876,7 @@ async function downloadImagesStreamingZip() {
 
           let realExt = fallbackExt;
           if (firstChunk && firstChunk.length >= 12) {
-            const view = firstChunk;
-            if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) realExt = 'png';
-            else if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) realExt = 'jpg';
-            else if (view[0] === 0x25 && view[1] === 0x50 && view[2] === 0x44 && view[3] === 0x46) realExt = 'pdf';
-            else if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) realExt = 'mp3';
-            else if (view[0] === 0x55 && view[1] === 0x6E && view[2] === 0x69 && view[3] === 0x74 && view[4] === 0x79) realExt = 'unity3d';
-            else if (view[0] === 0x4F && view[1] === 0x67 && view[2] === 0x67 && view[3] === 0x53) realExt = 'ogg';
-            else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46) {
-              if (view.length >= 12 && view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) realExt = 'webp';
-              else realExt = 'wav';
-            }
-            else {
-              const str = String.fromCharCode(...view.slice(0, 10));
-              if (str.startsWith('v ') || str.startsWith('# ') || str.startsWith('vt ') || str.startsWith('vn ') || str.includes('mtllib')) realExt = 'obj';
-            }
+            realExt = detectExtensionFromBytes(firstChunk, fallbackExt);
           }
 
           const stream = new ReadableStream({

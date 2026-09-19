@@ -88,6 +88,7 @@ function initCutter(data) {
     });
   });
   updateCutAllButton(); // initial state (all checking → disabled)
+}
 
 // ─── CORS Check ───────────────────────────────────────────────
 // Returns 'url' if images can be fetched directly, 'upload' otherwise.
@@ -192,10 +193,17 @@ async function cutAllDecks() {
   const zip = new JSZip();
   let totalCards  = 0;
   let failedDecks = 0;
+  const nameCounts = new Map();
 
   for (const deck of eligibleDecks) {
     const rawName  = deck.deckName || `deck_${deck.deckKey}`;
-    const safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
+    let safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
+
+    const count = (nameCounts.get(safeName) || 0) + 1;
+    nameCounts.set(safeName, count);
+    if (count > 1) {
+      safeName = `${safeName}(${count})`;
+    }
 
     setProgress(`Cutting ${escHtml(rawName)}…`);
 
@@ -203,21 +211,40 @@ async function cutAllDecks() {
       // Face sheet
       const faceResp = await fetch(deck.faceUrl, { mode: 'cors' });
       if (!faceResp.ok) throw new Error(`HTTP ${faceResp.status}`);
-      const faceCards = await sliceImageToCards(await faceResp.blob(), deck);
-      for (const { canvas, index } of faceCards) {
-        zip.file(`${safeName}_${String(index + 1).padStart(3, '0')}_face.png`, await canvasToBlob(canvas));
+      
+      const faceSuffix = (deck.backUrl && deck.backUrl === deck.faceUrl) ? 'back_face' : 'face';
+
+      if (deck.totalSlots === 1) {
+        const blob = await faceResp.blob();
+        const ext = await getRealExtension(blob, deck.faceUrl);
+        zip.file(`${safeName}_${faceSuffix}.${ext}`, blob);
         totalCards++;
+      } else {
+        const faceCards = await sliceImageToCards(await faceResp.blob(), deck);
+        for (const { canvas, index } of faceCards) {
+          zip.file(`${safeName}_${String(index + 1).padStart(3, '0')}_${faceSuffix}.png`, await canvasToBlob(canvas));
+          totalCards++;
+        }
       }
 
-      // Back sheet — only for unique-back decks
-      if (deck.uniqueBack && deck.backUrl && deck.backUrl !== deck.faceUrl) {
+      // Back — unique: slice the sheet; non-unique: add single template file
+      if (deck.backUrl && deck.backUrl !== deck.faceUrl) {
         setProgress(`Cutting ${escHtml(rawName)} back…`);
         const backResp = await fetch(deck.backUrl, { mode: 'cors' });
-        if (!backResp.ok) throw new Error(`HTTP ${backResp.status}`);
-        const backCards = await sliceImageToCards(await backResp.blob(), deck);
-        for (const { canvas, index } of backCards) {
-          zip.file(`${safeName}_${String(index + 1).padStart(3, '0')}_back.png`, await canvasToBlob(canvas));
-          totalCards++;
+        if (backResp.ok) {
+          if (deck.totalSlots === 1 || !deck.uniqueBack) {
+            // Shared back OR 1-slot deck — one file for the whole deck
+            const blob = await backResp.blob();
+            const ext = await getRealExtension(blob, deck.backUrl);
+            zip.file(`${safeName}_back.${ext}`, blob);
+            totalCards++;
+          } else {
+            const backCards = await sliceImageToCards(await backResp.blob(), deck);
+            for (const { canvas, index } of backCards) {
+              zip.file(`${safeName}_${String(index + 1).padStart(3, '0')}_back.png`, await canvasToBlob(canvas));
+              totalCards++;
+            }
+          }
         }
       }
     } catch (e) {
@@ -277,20 +304,35 @@ async function cutAndDownloadDeck(deckKey) {
     const faceResp = await fetch(deck.faceUrl, { mode: 'cors' });
     if (!faceResp.ok) throw new Error(`HTTP ${faceResp.status}`);
     const faceBlob = await faceResp.blob();
-    const faceCards = await sliceImageToCards(faceBlob, deck);
+    
+    let faceCards      = null;
+    let singleFaceBlob = null;
+    const faceSuffix   = (deck.backUrl && deck.backUrl === deck.faceUrl) ? 'back_face' : 'face';
+    
+    if (deck.totalSlots === 1) {
+      singleFaceBlob = faceBlob;
+    } else {
+      faceCards = await sliceImageToCards(faceBlob, deck);
+    }
 
-    let backCards = null;
-    // Only slice back if it's a unique-back deck (each card has its own back image on a sheet).
-    const needsBack = deck.uniqueBack && deck.backUrl && deck.backUrl !== deck.faceUrl;
-    if (needsBack) {
+    let backCards      = null;  // sliced back cards (uniqueBack only)
+    let singleBackBlob = null;  // single back image (non-unique back or 1-slot)
+
+    if (deck.backUrl && deck.backUrl !== deck.faceUrl) {
       if (btn) btn.innerHTML = `<span class="spin">⟳</span> Loading back…`;
       const backResp = await fetch(deck.backUrl, { mode: 'cors' });
       if (!backResp.ok) throw new Error(`HTTP ${backResp.status}`);
       const backBlob = await backResp.blob();
-      backCards = await sliceImageToCards(backBlob, deck);
+      if (deck.totalSlots === 1 || !deck.uniqueBack) {
+        // Shared back or single-slot deck — include as a single template image
+        singleBackBlob = backBlob;
+      } else {
+        // Unique backs — slice the sheet into individual card backs
+        backCards = await sliceImageToCards(backBlob, deck);
+      }
     }
 
-    await packAndDownload(deck, faceCards, backCards);
+    await packAndDownload(deck, faceCards, backCards, singleBackBlob, singleFaceBlob, faceSuffix);
   } catch (e) {
     showToast('Cut failed: ' + e.message, 'error');
   } finally {
@@ -304,25 +346,48 @@ async function uploadAndCutDeck(deckKey) {
   const deck = cutterDecks.find(d => d.deckKey === deckKey);
   if (!deck) return;
 
-  // Only prompt for a back sheet if it's a unique-back deck.
-  const needsBack = deck.uniqueBack && deck.backUrl && deck.backUrl !== deck.faceUrl;
-
   try {
     showToast(`Select the FACE sheet for "${deck.deckName}"`, 'success');
     const faceFile = await promptFileUpload();
     if (!faceFile) return;
 
-    const faceCards = await sliceImageToCards(faceFile, deck);
-
-    let backCards = null;
-    if (needsBack) {
-      showToast(`Now select the BACK sheet for "${deck.deckName}"`, 'success');
-      const backFile = await promptFileUpload();
-      if (!backFile) return;
-      backCards = await sliceImageToCards(backFile, deck);
+    let faceCards      = null;
+    let singleFaceBlob = null;
+    const faceSuffix   = (deck.backUrl && deck.backUrl === deck.faceUrl) ? 'back_face' : 'face';
+    
+    if (deck.totalSlots === 1) {
+      singleFaceBlob = faceFile;
+    } else {
+      faceCards = await sliceImageToCards(faceFile, deck);
     }
 
-    await packAndDownload(deck, faceCards, backCards);
+    let backCards      = null;
+    let singleBackBlob = null;
+
+    if (deck.backUrl && deck.backUrl !== deck.faceUrl) {
+      if (deck.totalSlots > 1 && deck.uniqueBack) {
+        // Unique backs — slice a separate back sheet
+        showToast(`Now select the BACK sheet for "${deck.deckName}"`, 'success');
+        const backFile = await promptFileUpload();
+        if (backFile) backCards = await sliceImageToCards(backFile, deck);
+      } else {
+        // Shared back or single-slot deck — try to fetch silently first; if CORS fails, ask for upload
+        try {
+          const resp = await fetch(deck.backUrl, { mode: 'cors', signal: AbortSignal.timeout(5000) });
+          if (resp.ok) {
+            singleBackBlob = await resp.blob();
+          } else {
+            throw new Error('not ok');
+          }
+        } catch {
+          showToast(`Select the single BACK image for "${deck.deckName}"`, 'success');
+          const backFile = await promptFileUpload();
+          if (backFile) singleBackBlob = backFile;
+        }
+      }
+    }
+
+    await packAndDownload(deck, faceCards, backCards, singleBackBlob, singleFaceBlob, faceSuffix);
   } catch (e) {
     showToast('Cut failed: ' + e.message, 'error');
   }
@@ -385,24 +450,42 @@ function loadImageFromSource(source) {
 }
 
 // ─── Pack & Download ZIP ──────────────────────────────────────
-async function packAndDownload(deck, faceCards, backCards) {
+// faceCards      — array of sliced face card canvases (null if singleFaceBlob is used)
+// backCards      — array of sliced back card canvases (uniqueBack decks)
+// singleBackBlob — one back image added as-is (non-unique back decks or single slot)
+// singleFaceBlob — one face image added as-is (single slot decks)
+async function packAndDownload(deck, faceCards, backCards = null, singleBackBlob = null, singleFaceBlob = null, faceSuffix = 'face') {
   const rawName  = deck.deckName || `deck_${deck.deckKey}`;
   const safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
 
   const zip = new JSZip();
+  let faceCount = 0;
 
-  for (const { canvas, index } of faceCards) {
-    const blob    = await canvasToBlob(canvas);
-    const cardNum = String(index + 1).padStart(3, '0');
-    zip.file(`${safeName}_${cardNum}_face.png`, blob);
+  if (singleFaceBlob) {
+    const ext = await getRealExtension(singleFaceBlob, deck.faceUrl);
+    zip.file(`${safeName}_${faceSuffix}.${ext}`, singleFaceBlob);
+    faceCount = 1;
+  } else if (faceCards) {
+    for (const { canvas, index } of faceCards) {
+      const blob    = await canvasToBlob(canvas);
+      const cardNum = String(index + 1).padStart(3, '0');
+      zip.file(`${safeName}_${cardNum}_${faceSuffix}.png`, blob);
+      faceCount++;
+    }
   }
 
+  let backCount = 0;
   if (backCards && backCards.length > 0) {
+    // Unique back — each card has its own back image
     for (const { canvas, index } of backCards) {
       const blob    = await canvasToBlob(canvas);
       const cardNum = String(index + 1).padStart(3, '0');
       zip.file(`${safeName}_${cardNum}_back.png`, blob);
     }
+  } else if (singleBackBlob) {
+    // Shared back — one template image for the whole deck
+    const ext = await getRealExtension(singleBackBlob, deck.backUrl);
+    zip.file(`${safeName}_back.${ext}`, singleBackBlob);
   }
 
   const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
@@ -731,4 +814,28 @@ async function downloadCardsZip() {
 
 function canvasToBlob(canvas) {
   return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+}
+
+async function getRealExtension(blob, fallbackUrl = '') {
+  if (!blob) return 'png';
+  let ext = 'png';
+  const nameToMatch = blob.name || fallbackUrl || '';
+  const urlMatch = nameToMatch.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
+  if (urlMatch) ext = urlMatch[1].toLowerCase();
+
+  try {
+    if (blob.size >= 12) {
+      const buffer = await blob.slice(0, 12).arrayBuffer();
+      const view = new Uint8Array(buffer);
+      if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) ext = 'png';
+      else if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) ext = 'jpg';
+      else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46 &&
+               view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) ext = 'webp';
+      else if (view[0] === 0x47 && view[1] === 0x49 && view[2] === 0x46) ext = 'gif';
+      else if (view[0] === 0x42 && view[1] === 0x4D) ext = 'bmp';
+    }
+  } catch (e) {
+    // ignore errors reading the blob, default to url match or png
+  }
+  return ext;
 }
