@@ -7,6 +7,9 @@
 //   4. Sheet is sliced according to NumWidth × NumHeight grid
 //   5. Cards are downloaded as ZIP with naming:
 //        {deckName}_{card###}_{face|back}.png
+//
+// v1.2.0: Per-deck Cut button (Cut & Download / Upload & Cut)
+//         Slices both face + back into one ZIP.
 // ============================================================
 
 'use strict';
@@ -59,6 +62,9 @@ let activeSide    = 'face'; // 'face' | 'back'
 let slicedCards   = [];
 let uploadedFile  = null;
 
+// CORS status cache: deckKey → 'checking' | 'url' | 'upload'
+const deckCorsStatus = new Map();
+
 // ─── Init ─────────────────────────────────────────────────────
 function initCutter(data) {
   cutterDecks   = extractDecks(data);
@@ -66,14 +72,251 @@ function initCutter(data) {
   activeSide    = 'face';
   slicedCards   = [];
   uploadedFile  = null;
+  deckCorsStatus.clear();
 
   resetMatchStatus();
   renderCutterDecks();
   resetSliceArea();
+
+  // Kick off async CORS checks for all decks
+  cutterDecks.forEach(deck => {
+    deckCorsStatus.set(deck.deckKey, 'checking');
+    checkDeckCors(deck).then(status => {
+      deckCorsStatus.set(deck.deckKey, status);
+      updateDeckCutButton(deck.deckKey, status);
+    });
+  });
+}
+
+// ─── CORS Check ───────────────────────────────────────────────
+// Returns 'url' if images can be fetched directly, 'upload' otherwise.
+async function checkDeckCors(deck) {
+  const urls = [deck.faceUrl];
+  if (deck.backUrl && deck.backUrl !== deck.faceUrl) urls.push(deck.backUrl);
+
+  for (const url of urls) {
+    if (!url) continue;
+    let ok = false;
+    try {
+      // Try HEAD first (minimal data transfer)
+      await fetch(url, {
+        mode: 'cors',
+        method: 'HEAD',
+        signal: AbortSignal.timeout(6000),
+      });
+      ok = true;
+    } catch {
+      // HEAD failed or CORS blocked — try GET with Range
+      try {
+        await fetch(url, {
+          mode: 'cors',
+          method: 'GET',
+          headers: { Range: 'bytes=0-1023' },
+          signal: AbortSignal.timeout(6000),
+        });
+        ok = true;
+      } catch {
+        return 'upload';
+      }
+    }
+    if (!ok) return 'upload';
+  }
+  return 'url';
+}
+
+// ─── Update a single deck's cut button after CORS check ──────
+function updateDeckCutButton(deckKey, status) {
+  const btn = document.querySelector(`#cutter-deck-${deckKey} .cutter-cut-btn`);
+  if (!btn) return;
+
+  if (status === 'checking') {
+    btn.innerHTML = `<span class="spin">⟳</span> Checking…`;
+    btn.disabled = true;
+    btn.className = 'cutter-cut-btn';
+  } else if (status === 'url') {
+    btn.innerHTML = `${scissorsIcon()} Cut &amp; download`;
+    btn.title = 'Cut and download';
+    btn.disabled = false;
+    btn.className = 'cutter-cut-btn';
+    btn.onclick = () => cutAndDownloadDeck(deckKey);
+  } else {
+    btn.innerHTML = `${uploadIcon()} Upload &amp; cut`;
+    btn.title = 'Upload and cut';
+    btn.disabled = false;
+    btn.className = 'cutter-cut-btn mode-upload';
+    btn.onclick = () => uploadAndCutDeck(deckKey);
+  }
+}
+
+function scissorsIcon() {
+  return `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="5" cy="5" r="2" stroke="currentColor" stroke-width="1.4"/>
+    <circle cx="5" cy="15" r="2" stroke="currentColor" stroke-width="1.4"/>
+    <path d="M7 6.5L17 12M7 13.5L17 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function uploadIcon() {
+  return `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M10 13V4M10 4L7 7M10 4l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4 16h12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>`;
+}
+
+// ─── Cut & Download ───────────────────────────────────────────
+// Fetches face (and back if different) URLs, slices, zips both.
+async function cutAndDownloadDeck(deckKey) {
+  const deck = cutterDecks.find(d => d.deckKey === deckKey);
+  if (!deck) return;
+
+  const btn = document.querySelector(`#cutter-deck-${deckKey} .cutter-cut-btn`);
+  if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spin">⟳</span> Loading…`; }
+
+  try {
+    const faceResp = await fetch(deck.faceUrl, { mode: 'cors' });
+    if (!faceResp.ok) throw new Error(`HTTP ${faceResp.status}`);
+    const faceBlob = await faceResp.blob();
+    const faceCards = await sliceImageToCards(faceBlob, deck);
+
+    let backCards = null;
+    const needsBack = deck.backUrl && deck.backUrl !== deck.faceUrl;
+    if (needsBack) {
+      if (btn) btn.innerHTML = `<span class="spin">⟳</span> Loading back…`;
+      const backResp = await fetch(deck.backUrl, { mode: 'cors' });
+      if (!backResp.ok) throw new Error(`HTTP ${backResp.status}`);
+      const backBlob = await backResp.blob();
+      backCards = await sliceImageToCards(backBlob, deck);
+    }
+
+    await packAndDownload(deck, faceCards, backCards);
+  } catch (e) {
+    showToast('Cut failed: ' + e.message, 'error');
+  } finally {
+    updateDeckCutButton(deckKey, 'url');
+  }
+}
+
+// ─── Upload & Cut ─────────────────────────────────────────────
+// Prompts user for image file(s), slices, zips both sides.
+async function uploadAndCutDeck(deckKey) {
+  const deck = cutterDecks.find(d => d.deckKey === deckKey);
+  if (!deck) return;
+
+  const needsBack = deck.backUrl && deck.backUrl !== deck.faceUrl;
+
+  try {
+    showToast(`Select the FACE sheet for "${deck.deckName}"`, 'success');
+    const faceFile = await promptFileUpload();
+    if (!faceFile) return;
+
+    const faceCards = await sliceImageToCards(faceFile, deck);
+
+    let backCards = null;
+    if (needsBack) {
+      showToast(`Now select the BACK sheet for "${deck.deckName}"`, 'success');
+      const backFile = await promptFileUpload();
+      if (!backFile) return;
+      backCards = await sliceImageToCards(backFile, deck);
+    }
+
+    await packAndDownload(deck, faceCards, backCards);
+  } catch (e) {
+    showToast('Cut failed: ' + e.message, 'error');
+  }
+}
+
+// Opens a native file picker and resolves with the chosen File (or null).
+function promptFileUpload() {
+  return new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+
+    const done = file => {
+      document.body.removeChild(input);
+      resolve(file || null);
+    };
+
+    input.addEventListener('change', e => done(e.target.files[0]));
+    input.addEventListener('cancel', () => done(null));
+    input.click();
+  });
+}
+
+// ─── Pure Image Slicer ────────────────────────────────────────
+// Returns array of { canvas, index, col, row } without touching global state.
+async function sliceImageToCards(source, deck) {
+  const img = await loadImageFromSource(source);
+  const { numWidth, numHeight } = deck;
+  const cardW = Math.floor(img.width  / numWidth);
+  const cardH = Math.floor(img.height / numHeight);
+
+  const cards = [];
+  for (let row = 0; row < numHeight; row++) {
+    for (let col = 0; col < numWidth; col++) {
+      const canvas  = document.createElement('canvas');
+      canvas.width  = cardW;
+      canvas.height = cardH;
+      canvas.getContext('2d')
+        .drawImage(img, col * cardW, row * cardH, cardW, cardH, 0, 0, cardW, cardH);
+      cards.push({ canvas, index: row * numWidth + col, col, row });
+    }
+  }
+  return cards;
+}
+
+// Loads an image from a File/Blob or URL string.
+// For Blob sources, uses an object URL (avoids canvas taint).
+function loadImageFromSource(source) {
+  return new Promise((resolve, reject) => {
+    const isBlob = source instanceof Blob;
+    const url    = isBlob ? URL.createObjectURL(source) : source;
+    const img    = new Image();
+    if (!isBlob) img.crossOrigin = 'anonymous';
+    img.onload  = () => { if (isBlob) URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { if (isBlob) URL.revokeObjectURL(url); reject(new Error('Failed to load image')); };
+    img.src = url;
+  });
+}
+
+// ─── Pack & Download ZIP ──────────────────────────────────────
+async function packAndDownload(deck, faceCards, backCards) {
+  const rawName  = deck.deckName || `deck_${deck.deckKey}`;
+  const safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
+
+  const zip = new JSZip();
+
+  for (const { canvas, index } of faceCards) {
+    const blob    = await canvasToBlob(canvas);
+    const cardNum = String(index + 1).padStart(3, '0');
+    zip.file(`${safeName}_${cardNum}_face.png`, blob);
+  }
+
+  if (backCards && backCards.length > 0) {
+    for (const { canvas, index } of backCards) {
+      const blob    = await canvasToBlob(canvas);
+      const cardNum = String(index + 1).padStart(3, '0');
+      zip.file(`${safeName}_${cardNum}_back.png`, blob);
+    }
+  }
+
+  const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+  const a       = document.createElement('a');
+  a.href        = URL.createObjectURL(zipBlob);
+  a.download    = `${safeName}_cards.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+
+  const total = faceCards.length + (backCards?.length ?? 0);
+  showToast(`Saved ${total} card images as ZIP`, 'success');
 }
 
 // ─── Deck List Renderer ───────────────────────────────────────
-// Each row shows: [face thumb] [deck info + grid] [back thumb]
+// Each row shows: [face thumb] [deck info + grid + cut btn] [back thumb]
 function renderCutterDecks() {
   const list    = document.getElementById('cutter-deck-list');
   const countEl = document.getElementById('cutter-deck-count');
@@ -92,6 +335,26 @@ function renderCutterDecks() {
     const faceFile = filenameOf(d.faceUrl);
     const backFile  = filenameOf(d.backUrl);
     const isActive  = d.deckKey === activeDeckKey;
+    const corsStatus = deckCorsStatus.get(d.deckKey) || 'checking';
+
+    // Cut button label depends on cors status (updated later if still checking)
+    let cutBtnHtml;
+    if (corsStatus === 'checking') {
+      cutBtnHtml = `<button class="cutter-cut-btn" disabled title="Checking…">
+        <span class="spin">⟳</span> Checking…
+      </button>`;
+    } else if (corsStatus === 'url') {
+      cutBtnHtml = `<button class="cutter-cut-btn" title="Cut and download"
+        onclick="cutAndDownloadDeck('${d.deckKey}')">
+        ${scissorsIcon()} Cut &amp; download
+      </button>`;
+    } else {
+      cutBtnHtml = `<button class="cutter-cut-btn mode-upload" title="Upload and cut"
+        onclick="uploadAndCutDeck('${d.deckKey}')">
+        ${uploadIcon()} Upload &amp; cut
+      </button>`;
+    }
+
     return `
     <div class="cutter-deck-row ${isActive ? 'active' : ''}" id="cutter-deck-${d.deckKey}">
       <!-- Face side -->
@@ -102,7 +365,7 @@ function renderCutterDecks() {
             ? `<img src="${escHtml(d.faceUrl)}" alt="Face" loading="lazy" onerror="this.style.opacity='0'" />`
             : '<div class="no-thumb">—</div>'}
         </div>
-        <div class="cutter-sheet-label">Face</div>
+        <div class="cutter-sheet-label">FACE</div>
         <div class="cutter-sheet-file" title="${escHtml(d.faceUrl)}">${escHtml(faceFile)}</div>
       </div>
 
@@ -114,6 +377,7 @@ function renderCutterDecks() {
           <span class="cutter-chip">${d.totalSlots} slots</span>
           ${d.uniqueBack ? '<span class="cutter-chip chip-unique">Unique backs</span>' : ''}
         </div>
+        ${cutBtnHtml}
       </div>
 
       <!-- Back side -->
@@ -124,7 +388,7 @@ function renderCutterDecks() {
             ? `<img src="${escHtml(d.backUrl)}" alt="Back" loading="lazy" onerror="this.style.opacity='0'" />`
             : '<div class="no-thumb">—</div>'}
         </div>
-        <div class="cutter-sheet-label">Back</div>
+        <div class="cutter-sheet-label">BACK</div>
         <div class="cutter-sheet-file" title="${escHtml(d.backUrl)}">${escHtml(backFile)}</div>
       </div>
     </div>`;
@@ -220,7 +484,7 @@ function resetSliceArea() {
   if (btn) btn.disabled = true;
 }
 
-// ─── File Handling ────────────────────────────────────────────
+// ─── File Handling (drop zone) ────────────────────────────────
 function handleCutterFile(event) {
   const file = event.target.files[0];
   if (file) processUploadedFile(file);
@@ -262,50 +526,29 @@ function processUploadedFile(file) {
   }
 }
 
-// ─── Core Slicer ─────────────────────────────────────────────
+// ─── Core Slicer (for the drop zone preview flow) ─────────────
 async function sliceSheet(file) {
   const deck = cutterDecks.find(d => d.deckKey === activeDeckKey);
   if (!deck) { showToast('Select a deck first', 'error'); return; }
 
-  const { numWidth, numHeight } = deck;
-
-  let img;
+  let cards;
   try {
-    img = await loadImage(file);
+    cards = await sliceImageToCards(file, deck);
   } catch (e) {
     showToast('Could not load image: ' + e.message, 'error');
     return;
   }
 
-  const cardW = Math.floor(img.width  / numWidth);
-  const cardH = Math.floor(img.height / numHeight);
+  slicedCards = cards;
 
-  slicedCards = [];
+  const img = await loadImageFromSource(file).catch(() => null);
+  const sheetW = img?.width  || 0;
+  const sheetH = img?.height || 0;
+  const cardW  = deck.numWidth  > 0 ? Math.floor(sheetW / deck.numWidth)  : 0;
+  const cardH  = deck.numHeight > 0 ? Math.floor(sheetH / deck.numHeight) : 0;
 
-  for (let row = 0; row < numHeight; row++) {
-    for (let col = 0; col < numWidth; col++) {
-      const canvas  = document.createElement('canvas');
-      canvas.width  = cardW;
-      canvas.height = cardH;
-      canvas.getContext('2d')
-        .drawImage(img, col * cardW, row * cardH, cardW, cardH, 0, 0, cardW, cardH);
-
-      slicedCards.push({ canvas, index: row * numWidth + col, col, row });
-    }
-  }
-
-  renderSlicedCards(deck, cardW, cardH, img.width, img.height);
-  showToast(`Sliced ${slicedCards.length} cards (${numWidth}×${numHeight})`, 'success');
-}
-
-function loadImage(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload  = () => { URL.revokeObjectURL(url); resolve(img); };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Failed to load image')); };
-    img.src = url;
-  });
+  renderSlicedCards(deck, cardW, cardH, sheetW, sheetH);
+  showToast(`Sliced ${slicedCards.length} cards (${deck.numWidth}×${deck.numHeight})`, 'success');
 }
 
 // ─── Preview Renderer ─────────────────────────────────────────
@@ -323,8 +566,8 @@ function renderSlicedCards(deck, cardW, cardH, sheetW, sheetH) {
   preview.innerHTML = '';
 
   // Preview thumbnails capped at 120px wide
-  const thumbW = Math.min(120, cardW);
-  const thumbH = Math.round(thumbW * cardH / cardW);
+  const thumbW = Math.min(120, cardW || 120);
+  const thumbH = Math.round(thumbW * (cardH || thumbW) / (cardW || thumbW));
 
   slicedCards.forEach(({ canvas, index, col, row }) => {
     const wrap  = document.createElement('div');
@@ -346,7 +589,7 @@ function renderSlicedCards(deck, cardW, cardH, sheetW, sheetH) {
   });
 }
 
-// ─── ZIP Download ─────────────────────────────────────────────
+// ─── ZIP Download (drop-zone flow — single side) ──────────────
 async function downloadCardsZip() {
   if (slicedCards.length === 0) { showToast('No cards sliced yet', 'error'); return; }
 

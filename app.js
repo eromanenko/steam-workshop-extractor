@@ -1167,3 +1167,9 @@ window.addEventListener('DOMContentLoaded', () => {
     fetchFromUrl();
   }
 });
+
+// ─── Section Collapse Toggle ─────────────────────────────────────────
+function toggleSection(sectionId) {
+  const section = document.getElementById(sectionId);
+  if (section) section.classList.toggle('collapsed');
+}
