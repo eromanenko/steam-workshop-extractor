@@ -263,7 +263,10 @@ async function cutAllDecks() {
   const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
   const a       = document.createElement('a');
   a.href        = URL.createObjectURL(zipBlob);
-  a.download    = 'all_decks_cards.zip';
+  const modName = (typeof currentData !== 'undefined' && currentData ? (currentData.SaveName || currentData._workshopTitle || 'workshop') : 'workshop')
+    .replace(/[^\p{L}\p{N}_-]/gu, '_').slice(0, 40);
+  const wId     = (typeof currentData !== 'undefined' && currentData) ? currentData._workshopId : null;
+  a.download    = wId ? `${modName}_decks_[tts${wId}].zip` : `${modName}_decks.zip`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
