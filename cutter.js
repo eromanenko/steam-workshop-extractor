@@ -342,7 +342,7 @@ async function triggerZipDownload(zip, suffix) {
 }
 
 async function downloadMetaAllFiles() {
-  const files = allAssets.filter(a => a.type === 'image');
+  const files = allAssets.filter(a => a.type !== 'url');
   if (files.length === 0) {
     showToast('No files found to download', 'error');
     return;
@@ -357,8 +357,6 @@ async function downloadMetaAllFiles() {
   for (let i = 0; i < files.length; i++) {
     const asset = files[i];
     const shortUrl = asset.url.split('/').pop() || `file_${i}`;
-    const extMatch = asset.url.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
-    const fallbackExt = extMatch ? extMatch[1].toLowerCase() : 'jpg';
     const baseFilename = `${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}`;
 
     setMetaStatus(i, files.length, `Downloading: ${asset.field}`);
@@ -382,6 +380,25 @@ async function downloadMetaAllFiles() {
 
   setMetaStatus(files.length, files.length, 'Generating ZIP file...');
   
+  const manifest = [
+    'Steam Workshop Extractor — All Files Manifest',
+    '=============================================',
+    `Total files  : ${files.length}`,
+    `Downloaded   : ${done}`,
+    `Skipped      : ${skipped.length}`,
+    '',
+    '--- Files Downloaded ---',
+    ...files
+      .filter(a => !skipped.includes(a.url))
+      .map(a => `[${a.field}] ${a.url}`),
+    '',
+    ...(skipped.length > 0 ? [
+      '--- Files Skipped (CORS blocked or error) ---',
+      ...skipped
+    ] : [])
+  ].join('\n');
+  zip.file('manifest.txt', manifest);
+
   try {
     await triggerZipDownload(zip, 'all_files');
     showToast(
@@ -412,7 +429,7 @@ async function downloadMetaCutAndOthers() {
     if (d.backUrl) deckUrls.add(d.backUrl);
   });
 
-  const otherFiles = allAssets.filter(a => a.type === 'image' && !deckUrls.has(a.url));
+  const otherFiles = allAssets.filter(a => a.type !== 'url' && !deckUrls.has(a.url));
 
   // 3. Download other files
   let otherDone = 0;
@@ -444,6 +461,28 @@ async function downloadMetaCutAndOthers() {
 
   setMetaStatus(otherFiles.length, otherFiles.length, 'Generating ZIP file...');
   
+  const manifest = [
+    'Steam Workshop Extractor — Cut & Others Manifest',
+    '================================================',
+    `Total cut cards : ${totalCards}`,
+    `Failed decks    : ${failedDecks}`,
+    '',
+    `Other files total : ${otherFiles.length}`,
+    `Other downloaded  : ${otherDone}`,
+    `Other skipped     : ${skipped.length}`,
+    '',
+    '--- Other Files Downloaded ---',
+    ...otherFiles
+      .filter(a => !skipped.includes(a.url))
+      .map(a => `[${a.field}] ${a.url}`),
+    '',
+    ...(skipped.length > 0 ? [
+      '--- Other Files Skipped (CORS blocked or error) ---',
+      ...skipped
+    ] : [])
+  ].join('\n');
+  zip.file('manifest.txt', manifest);
+
   try {
     await triggerZipDownload(zip, 'cut_and_others');
     const msg = `Saved ${totalCards} cards & ${otherDone} other files.`;
@@ -996,25 +1035,28 @@ function canvasToBlob(canvas) {
 }
 
 async function getRealExtension(blob, fallbackUrl = '') {
-  if (!blob) return 'png';
-  let ext = 'png';
+  if (!blob) return 'bin';
+  
+  let ext = 'bin';
   const nameToMatch = blob.name || fallbackUrl || '';
-  const urlMatch = nameToMatch.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
-  if (urlMatch) ext = urlMatch[1].toLowerCase();
+  const urlMatch = nameToMatch.match(/\.([a-z0-9]{2,7})(\?|$)/i);
+  
+  if (urlMatch) {
+    ext = urlMatch[1].toLowerCase();
+  } else if (nameToMatch.includes('steamusercontent') || nameToMatch.includes('steamuserimages')) {
+    ext = 'png';
+  }
 
   try {
     if (blob.size >= 12) {
       const buffer = await blob.slice(0, 12).arrayBuffer();
       const view = new Uint8Array(buffer);
-      if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) ext = 'png';
-      else if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) ext = 'jpg';
-      else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46 &&
-               view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) ext = 'webp';
-      else if (view[0] === 0x47 && view[1] === 0x49 && view[2] === 0x46) ext = 'gif';
-      else if (view[0] === 0x42 && view[1] === 0x4D) ext = 'bmp';
+      if (typeof detectExtensionFromBytes === 'function') {
+        ext = detectExtensionFromBytes(view, ext);
+      }
     }
   } catch (e) {
-    // ignore errors reading the blob, default to url match or png
+    // ignore errors reading the blob
   }
   return ext;
 }
