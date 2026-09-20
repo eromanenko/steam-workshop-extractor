@@ -795,6 +795,105 @@ body {
   color: var(--accent-2);
 }
 
+.meta-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.meta-action-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-main);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.meta-action-btn svg {
+  width: 16px;
+  height: 16px;
+  color: currentColor;
+}
+
+.meta-action-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.meta-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#meta-btn-download-cut {
+  background: linear-gradient(135deg, #34d399 0%, #059669 100%);
+  border: none;
+  color: #fff;
+}
+
+#meta-btn-download-cut:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4ade80 0%, #10b981 100%);
+}
+
+#meta-btn-download-all {
+  background: linear-gradient(135deg, #6cc3ff 0%, #3b82f6 100%);
+  border: none;
+  color: #fff;
+}
+
+#meta-btn-download-all:hover:not(:disabled) {
+  background: linear-gradient(135deg, #7dd3fc 0%, #60a5fa 100%);
+}
+
+.meta-status-bar {
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: rgba(108, 195, 255, 0.05);
+  border: 1px solid rgba(108, 195, 255, 0.15);
+  border-radius: var(--radius-md);
+}
+
+.meta-status-bar.hidden {
+  display: none;
+}
+
+.meta-status-text {
+  font-size: 12px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-weight: 500;
+}
+
+.meta-status-text span:last-child {
+  color: var(--text-secondary);
+}
+
+.meta-status-progress {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.meta-status-fill {
+  height: 100%;
+  background: var(--accent-gradient);
+  width: 0%;
+  transition: width 0.2s ease;
+}
+
 /* === Assets Section === */
 .assets-section {
   margin-bottom: 24px;
@@ -1282,23 +1381,7 @@ body {
 
 /* === Card Sheet Cutter === */
 .cutter-section {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 24px 28px 28px;
   margin-bottom: 24px;
-  position: relative;
-  overflow: hidden;
-}
-
-.cutter-section::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, #f59e0b, #ec4899, #8b5cf6);
 }
 
 .cutter-header {
@@ -1316,8 +1399,23 @@ body {
 
 /* Collapse body */
 .cutter-body {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 24px 28px 28px;
+  position: relative;
   overflow: hidden;
   transition: opacity 0.25s ease;
+}
+
+.cutter-body::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #f59e0b, #ec4899, #8b5cf6);
 }
 
 .cutter-section.collapsed .cutter-body {

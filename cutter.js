@@ -180,17 +180,9 @@ function cutAllIcon() {
   </svg>`;
 }
 
-// ─── Cut All Decks ────────────────────────────────────────────
-// Fetches + slices all decks with 'url' CORS status, packs into one ZIP.
-async function cutAllDecks() {
+// ─── Shared Cut Decks Logic ───────────────────────────────────
+async function appendCutDecksToZip(zip, setProgress) {
   const eligibleDecks = cutterDecks.filter(d => deckCorsStatus.get(d.deckKey) === 'url');
-  if (eligibleDecks.length === 0) { showToast('No decks available for direct cut', 'error'); return; }
-
-  const btn = document.getElementById('cutter-cut-all-btn');
-  const setProgress = label => { if (btn) btn.innerHTML = `<span class="spin">⟳</span> ${label}`; };
-  if (btn) btn.disabled = true;
-
-  const zip = new JSZip();
   let totalCards  = 0;
   let failedDecks = 0;
   const nameCounts = new Map();
@@ -205,7 +197,7 @@ async function cutAllDecks() {
       safeName = `${safeName}(${count})`;
     }
 
-    setProgress(`Cutting ${escHtml(rawName)}…`);
+    if (setProgress) setProgress(`Cutting ${escHtml(rawName)}…`);
 
     try {
       // Face sheet
@@ -229,7 +221,7 @@ async function cutAllDecks() {
 
       // Back — unique: slice the sheet; non-unique: add single template file
       if (deck.backUrl && deck.backUrl !== deck.faceUrl) {
-        setProgress(`Cutting ${escHtml(rawName)} back…`);
+        if (setProgress) setProgress(`Cutting ${escHtml(rawName)} back…`);
         const backResp = await fetch(deck.backUrl, { mode: 'cors' });
         if (backResp.ok) {
           if (deck.totalSlots === 1 || !deck.uniqueBack) {
@@ -252,6 +244,22 @@ async function cutAllDecks() {
       failedDecks++;
     }
   }
+  return { totalCards, failedDecks, eligibleDecksCount: eligibleDecks.length };
+}
+
+// ─── Cut All Decks ────────────────────────────────────────────
+// Fetches + slices all decks with 'url' CORS status, packs into one ZIP.
+async function cutAllDecks() {
+  const eligibleDecks = cutterDecks.filter(d => deckCorsStatus.get(d.deckKey) === 'url');
+  if (eligibleDecks.length === 0) { showToast('No decks available for direct cut', 'error'); return; }
+
+  const btn = document.getElementById('cutter-cut-all-btn');
+  const setProgress = label => { if (btn) btn.innerHTML = `<span class="spin">⟳</span> ${label}`; };
+  if (btn) btn.disabled = true;
+
+  const zip = new JSZip();
+  
+  const { totalCards, failedDecks } = await appendCutDecksToZip(zip, setProgress);
 
   if (totalCards === 0) {
     showToast('Failed to cut any decks', 'error');
@@ -277,6 +285,174 @@ async function cutAllDecks() {
     : `Saved ${totalCards} cards from ${eligibleDecks.length - failedDecks} deck(s)`;
   showToast(msg, 'success');
   updateCutAllButton();
+}
+
+// ─── Meta Card Download Utilities ──────────────────────────────
+async function fetchAssetBlob(url) {
+  const candidates = [url, ...CORS_PROXIES.map(p => p(url))];
+  for (const tryUrl of candidates) {
+    try {
+      const res = await fetch(tryUrl, { signal: AbortSignal.timeout(15000) });
+      if (res.ok) { return await res.blob(); }
+    } catch {}
+  }
+  return null;
+}
+
+function setMetaStatus(i, total, msg) {
+  const btnCut = document.getElementById('meta-btn-download-cut');
+  const btnAll = document.getElementById('meta-btn-download-all');
+  const statusBar = document.getElementById('meta-status-bar');
+  const statusMsg = document.getElementById('meta-status-message');
+  const statusCount = document.getElementById('meta-status-count');
+  const statusFill = document.getElementById('meta-status-fill');
+
+  if (btnCut) btnCut.disabled = true;
+  if (btnAll) btnAll.disabled = true;
+  if (statusBar) statusBar.classList.remove('hidden');
+
+  const pct = total > 0 ? Math.round((i / total) * 100) : 0;
+  if (statusFill) statusFill.style.width = pct + '%';
+  if (statusMsg) statusMsg.textContent = msg || `Downloading...`;
+  if (statusCount) statusCount.textContent = total > 0 ? `${i} / ${total}` : '';
+}
+
+function resetMetaStatus() {
+  const btnCut = document.getElementById('meta-btn-download-cut');
+  const btnAll = document.getElementById('meta-btn-download-all');
+  const statusBar = document.getElementById('meta-status-bar');
+
+  if (btnCut) btnCut.disabled = false;
+  if (btnAll) btnAll.disabled = false;
+  if (statusBar) statusBar.classList.add('hidden');
+}
+
+async function triggerZipDownload(zip, suffix) {
+  const modName = (currentData?.SaveName || currentData?._workshopTitle || 'workshop')
+    .replace(/[^\p{L}\p{N}_-]/gu, '_').slice(0, 40);
+  const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(zipBlob);
+  const wId = currentData?._workshopId;
+  a.download = wId ? `${modName}_${suffix}_[tts${wId}].zip` : `${modName}_${suffix}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+async function downloadMetaAllFiles() {
+  const files = allAssets.filter(a => a.type === 'image');
+  if (files.length === 0) {
+    showToast('No files found to download', 'error');
+    return;
+  }
+
+  setMetaStatus(0, files.length, 'Starting download...');
+
+  const zip = new JSZip();
+  let done = 0;
+  const skipped = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const asset = files[i];
+    const shortUrl = asset.url.split('/').pop() || `file_${i}`;
+    const extMatch = asset.url.match(/\.(png|jpg|jpeg|gif|webp|bmp)(\?|$)/i);
+    const fallbackExt = extMatch ? extMatch[1].toLowerCase() : 'jpg';
+    const baseFilename = `${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}`;
+
+    setMetaStatus(i, files.length, `Downloading: ${asset.field}`);
+
+    let blob = await fetchAssetBlob(asset.url);
+    if (blob && blob.size > 0) {
+      const ext = await getRealExtension(blob, asset.url);
+      zip.file(`${baseFilename}.${ext}`, blob);
+      done++;
+    } else {
+      skipped.push(asset.url);
+    }
+    setMetaStatus(i + 1, files.length, `Downloading: ${asset.field}`);
+  }
+
+  if (done === 0) {
+    resetMetaStatus();
+    showToast('Could not download any files. CORS may be blocking them.', 'error');
+    return;
+  }
+
+  setMetaStatus(files.length, files.length, 'Generating ZIP file...');
+  
+  try {
+    await triggerZipDownload(zip, 'all_files');
+    showToast(
+      skipped.length > 0 ? `Saved ${done} file(s) (${skipped.length} skipped)` : `Saved ${done} file(s) to ZIP`,
+      'success'
+    );
+  } catch (e) {
+    showToast('ZIP generation error: ' + e.message, 'error');
+  }
+
+  resetMetaStatus();
+}
+
+async function downloadMetaCutAndOthers() {
+  setMetaStatus(0, 0, 'Preparing...');
+
+  const zip = new JSZip();
+  
+  // 1. Append cut decks
+  const { totalCards, failedDecks } = await appendCutDecksToZip(zip, (msg) => {
+    setMetaStatus(0, 0, msg);
+  });
+
+  // 2. Determine "other" files (exclude Face/Back URLs from decks)
+  const deckUrls = new Set();
+  cutterDecks.forEach(d => {
+    if (d.faceUrl) deckUrls.add(d.faceUrl);
+    if (d.backUrl) deckUrls.add(d.backUrl);
+  });
+
+  const otherFiles = allAssets.filter(a => a.type === 'image' && !deckUrls.has(a.url));
+
+  // 3. Download other files
+  let otherDone = 0;
+  const skipped = [];
+
+  for (let i = 0; i < otherFiles.length; i++) {
+    const asset = otherFiles[i];
+    const shortUrl = asset.url.split('/').pop() || `other_${i}`;
+    const baseFilename = `other_${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}`;
+
+    setMetaStatus(i, otherFiles.length, `Downloading other: ${asset.field}`);
+
+    let blob = await fetchAssetBlob(asset.url);
+    if (blob && blob.size > 0) {
+      const ext = await getRealExtension(blob, asset.url);
+      zip.file(`${baseFilename}.${ext}`, blob);
+      otherDone++;
+    } else {
+      skipped.push(asset.url);
+    }
+    setMetaStatus(i + 1, otherFiles.length, `Downloading other: ${asset.field}`);
+  }
+
+  if (totalCards === 0 && otherDone === 0) {
+    resetMetaStatus();
+    showToast('Could not download any files.', 'error');
+    return;
+  }
+
+  setMetaStatus(otherFiles.length, otherFiles.length, 'Generating ZIP file...');
+  
+  try {
+    await triggerZipDownload(zip, 'cut_and_others');
+    const msg = `Saved ${totalCards} cards & ${otherDone} other files.`;
+    showToast(msg + (skipped.length > 0 ? ` (${skipped.length} skipped)` : ''), 'success');
+  } catch (e) {
+    showToast('ZIP generation error: ' + e.message, 'error');
+  }
+
+  resetMetaStatus();
 }
 
 function scissorsIcon() {
