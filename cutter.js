@@ -342,153 +342,351 @@ async function triggerZipDownload(zip, suffix) {
 }
 
 async function downloadMetaAllFiles() {
+  if (!window.showSaveFilePicker) {
+    showToast('Your browser does not support streaming ZIP downloads. Please update Chrome/Edge.', 'error');
+    return;
+  }
+
   const files = allAssets.filter(a => a.type !== 'url');
   if (files.length === 0) {
     showToast('No files found to download', 'error');
     return;
   }
 
-  setMetaStatus(0, files.length, 'Starting download...');
+  setMetaStatus(0, files.length, 'Requesting file access...');
 
-  const zip = new JSZip();
-  let done = 0;
-  const skipped = [];
-
-  for (let i = 0; i < files.length; i++) {
-    const asset = files[i];
-    const shortUrl = asset.url.split('/').pop() || `file_${i}`;
-    const baseFilename = `${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}`;
-
-    setMetaStatus(i, files.length, `Downloading: ${asset.field}`);
-
-    let blob = await fetchAssetBlob(asset.url);
-    if (blob && blob.size > 0) {
-      const ext = await getRealExtension(blob, asset.url);
-      zip.file(`${baseFilename}.${ext}`, blob);
-      done++;
-    } else {
-      skipped.push(asset.url);
-    }
-    setMetaStatus(i + 1, files.length, `Downloading: ${asset.field}`);
-  }
-
-  if (done === 0) {
+  let fileHandle;
+  try {
+    const modName = (currentData?._workshopTitle || currentData?.SaveName || currentData?._localFile || 'workshop_mod')
+        .replace(/[^\p{L}\p{N}._-]/gu, '_').slice(0, 40);
+    const wId = currentData?._workshopId;
+    const filename = wId ? `${modName}_all_files_[tts${wId}].zip` : `${modName}_all_files.zip`;
+    fileHandle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'ZIP Archive', accept: { 'application/zip': ['.zip'] } }]
+    });
+  } catch (e) {
     resetMetaStatus();
-    showToast('Could not download any files. CORS may be blocking them.', 'error');
+    if (e.name !== 'AbortError') showToast('File selection failed', 'error');
     return;
   }
 
-  setMetaStatus(files.length, files.length, 'Generating ZIP file...');
-  
-  const manifest = [
-    'Steam Workshop Extractor — All Files Manifest',
-    '=============================================',
-    `Total files  : ${files.length}`,
-    `Downloaded   : ${done}`,
-    `Skipped      : ${skipped.length}`,
-    '',
-    '--- Files Downloaded ---',
-    ...files
-      .filter(a => !skipped.includes(a.url))
-      .map(a => `[${a.field}] ${a.url}`),
-    '',
-    ...(skipped.length > 0 ? [
-      '--- Files Skipped (CORS blocked or error) ---',
-      ...skipped
-    ] : [])
-  ].join('\n');
-  zip.file('manifest.txt', manifest);
+  setMetaStatus(0, files.length, 'Loading ZIP engine...');
+  const { downloadZip } = await import('https://cdn.jsdelivr.net/npm/client-zip/index.js');
+  const skipped = [];
+  let done = 0;
+
+  async function* yieldFiles() {
+    for (let i = 0; i < files.length; i++) {
+      const asset = files[i];
+      const shortUrl = asset.url.split('/').pop() || `file_${i}`;
+      const extMatch = asset.url.match(/\.([a-z0-9]{2,7})(\?|$)/i);
+      const fallbackExt = extMatch ? extMatch[1].toLowerCase() : 'bin';
+      const baseFilename = `${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}`;
+
+      setMetaStatus(i, files.length, `Streaming: ${asset.field} (${i + 1}/${files.length})`);
+
+      try {
+        let res = null;
+        const candidates = [asset.url, ...CORS_PROXIES.map(p => p(asset.url))];
+        for (const tryUrl of candidates) {
+          try {
+            const tryRes = await fetch(tryUrl, { signal: AbortSignal.timeout(15000) });
+            if (tryRes.ok) { res = tryRes; break; }
+          } catch {}
+        }
+
+        if (res && res.body) {
+          const reader = res.body.getReader();
+          const { value: firstChunk, done: readerDone } = await reader.read();
+
+          let realExt = fallbackExt;
+          if (firstChunk && firstChunk.length >= 12) {
+            realExt = detectExtensionFromBytes(firstChunk, fallbackExt);
+          }
+
+          const stream = new ReadableStream({
+            async start(controller) {
+              if (firstChunk) controller.enqueue(firstChunk);
+              if (readerDone) controller.close();
+            },
+            async pull(controller) {
+              try {
+                const { value, done } = await reader.read();
+                if (done) controller.close();
+                else controller.enqueue(value);
+              } catch(e) {
+                controller.error(e);
+              }
+            },
+            cancel(reason) {
+              reader.cancel(reason);
+            }
+          });
+
+          yield {
+            name: `${baseFilename}.${realExt}`,
+            lastModified: new Date(),
+            input: stream
+          };
+          done++;
+        } else {
+          skipped.push({ field: asset.field, url: asset.url, reason: 'Fetch failed (CORS blocked)' });
+        }
+      } catch (e) {
+        skipped.push({ field: asset.field, url: asset.url, reason: e.message });
+      }
+      setMetaStatus(i + 1, files.length);
+    }
+
+    const manifest = [
+      'Steam Workshop Extractor — All Files Manifest',
+      '=============================================',
+      `Total files  : ${files.length}`,
+      `Downloaded   : ${done}`,
+      `Skipped      : ${skipped.length}`,
+      '',
+      '--- Files Downloaded ---',
+      ...files.filter(a => !skipped.some(s => s.url === a.url)).map(a => `[${a.field}] ${a.url}`),
+      '',
+      '--- Skipped (open these manually) ---',
+      ...skipped.map(s => `[${s.field}] ${s.url}  // ${s.reason}`),
+    ];
+    yield { name: 'manifest.txt', lastModified: new Date(), input: manifest.join('\n') };
+
+    if (skipped.length > 0) {
+      const skippedTxt = [
+        '--- SKIPPED FILES ---',
+        'These files could not be downloaded automatically (likely blocked by CORS).',
+        'You can open these URLs manually in your browser and save them.',
+        '',
+        ...skipped.map(s => `[${s.field}] ${s.url}  // Error: ${s.reason}`)
+      ];
+      yield { name: '!skipped.txt', lastModified: new Date(), input: skippedTxt.join('\n') };
+    }
+  }
 
   try {
-    await triggerZipDownload(zip, 'all_files');
+    const writable = await fileHandle.createWritable();
+    setMetaStatus(0, files.length, 'Generating ZIP Stream...');
+    const response = downloadZip(yieldFiles());
+    await response.body.pipeTo(writable);
+
     showToast(
-      skipped.length > 0 ? `Saved ${done} file(s) (${skipped.length} skipped)` : `Saved ${done} file(s) to ZIP`,
+      skipped.length > 0 ? `Streaming complete. Saved ${done} file(s) (${skipped.length} skipped)` : `Streaming complete. Saved ${done} file(s)`,
       'success'
     );
   } catch (e) {
-    showToast('ZIP generation error: ' + e.message, 'error');
+    showToast('ZIP Streaming Error: ' + e.message, 'error');
   }
 
   resetMetaStatus();
 }
 
 async function downloadMetaCutAndOthers() {
-  setMetaStatus(0, 0, 'Preparing...');
+  if (!window.showSaveFilePicker) {
+    showToast('Your browser does not support streaming ZIP downloads. Please update Chrome/Edge.', 'error');
+    return;
+  }
 
-  const zip = new JSZip();
-  
-  // 1. Append cut decks
-  const { totalCards, failedDecks } = await appendCutDecksToZip(zip, (msg) => {
-    setMetaStatus(0, 0, msg);
-  });
+  setMetaStatus(0, 0, 'Requesting file access...');
 
-  // 2. Determine "other" files (exclude Face/Back URLs from decks)
+  let fileHandle;
+  try {
+    const modName = (currentData?._workshopTitle || currentData?.SaveName || currentData?._localFile || 'workshop_mod')
+        .replace(/[^\p{L}\p{N}._-]/gu, '_').slice(0, 40);
+    const wId = currentData?._workshopId;
+    const filename = wId ? `${modName}_cut_and_others_[tts${wId}].zip` : `${modName}_cut_and_others.zip`;
+    fileHandle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'ZIP Archive', accept: { 'application/zip': ['.zip'] } }]
+    });
+  } catch (e) {
+    resetMetaStatus();
+    if (e.name !== 'AbortError') showToast('File selection failed', 'error');
+    return;
+  }
+
+  setMetaStatus(0, 0, 'Loading ZIP engine...');
+  const { downloadZip } = await import('https://cdn.jsdelivr.net/npm/client-zip/index.js');
+
+  let totalCards = 0;
+  let failedDecks = 0;
+  let otherDone = 0;
+  const skipped = [];
+
+  // Determine "other" files (exclude Face/Back URLs from decks)
   const deckUrls = new Set();
   cutterDecks.forEach(d => {
     if (d.faceUrl) deckUrls.add(d.faceUrl);
     if (d.backUrl) deckUrls.add(d.backUrl);
   });
-
   const otherFiles = allAssets.filter(a => a.type !== 'url' && !deckUrls.has(a.url));
 
-  // 3. Download other files
-  let otherDone = 0;
-  const skipped = [];
+  async function* yieldFiles() {
+    // 1. Yield cut deck cards
+    const eligibleDecks = cutterDecks.filter(d => deckCorsStatus.get(d.deckKey) === 'url');
+    const nameCounts = new Map();
 
-  for (let i = 0; i < otherFiles.length; i++) {
-    const asset = otherFiles[i];
-    const shortUrl = asset.url.split('/').pop() || `other_${i}`;
-    const baseFilename = `other_${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}`;
+    for (const deck of eligibleDecks) {
+      const rawName = deck.deckName || `deck_${deck.deckKey}`;
+      let safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
 
-    setMetaStatus(i, otherFiles.length, `Downloading other: ${asset.field}`);
+      const count = (nameCounts.get(safeName) || 0) + 1;
+      nameCounts.set(safeName, count);
+      if (count > 1) safeName = `${safeName}(${count})`;
 
-    let blob = await fetchAssetBlob(asset.url);
-    if (blob && blob.size > 0) {
-      const ext = await getRealExtension(blob, asset.url);
-      zip.file(`${baseFilename}.${ext}`, blob);
-      otherDone++;
-    } else {
-      skipped.push(asset.url);
+      setMetaStatus(0, 0, `Cutting ${escHtml(rawName)}…`);
+
+      try {
+        // Face sheet
+        const faceResp = await fetch(deck.faceUrl, { mode: 'cors' });
+        if (!faceResp.ok) throw new Error(`HTTP ${faceResp.status}`);
+
+        const faceSuffix = (deck.backUrl && deck.backUrl === deck.faceUrl) ? 'back_face' : 'face';
+
+        if (deck.totalSlots === 1) {
+          const blob = await faceResp.blob();
+          const ext = await getRealExtension(blob, deck.faceUrl);
+          yield { name: `${safeName}_${faceSuffix}.${ext}`, lastModified: new Date(), input: blob };
+          totalCards++;
+        } else {
+          const faceCards = await sliceImageToCards(await faceResp.blob(), deck);
+          for (const { canvas, index } of faceCards) {
+            yield { name: `${safeName}_${String(index + 1).padStart(3, '0')}_${faceSuffix}.png`, lastModified: new Date(), input: await canvasToBlob(canvas) };
+            totalCards++;
+          }
+        }
+
+        // Back — unique: slice the sheet; non-unique: add single template file
+        if (deck.backUrl && deck.backUrl !== deck.faceUrl) {
+          setMetaStatus(0, 0, `Cutting ${escHtml(rawName)} back…`);
+          const backResp = await fetch(deck.backUrl, { mode: 'cors' });
+          if (backResp.ok) {
+            if (deck.totalSlots === 1 || !deck.uniqueBack) {
+              const blob = await backResp.blob();
+              const ext = await getRealExtension(blob, deck.backUrl);
+              yield { name: `${safeName}_back.${ext}`, lastModified: new Date(), input: blob };
+              totalCards++;
+            } else {
+              const backCards = await sliceImageToCards(await backResp.blob(), deck);
+              for (const { canvas, index } of backCards) {
+                yield { name: `${safeName}_${String(index + 1).padStart(3, '0')}_back.png`, lastModified: new Date(), input: await canvasToBlob(canvas) };
+                totalCards++;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to cut deck ${deck.deckKey}:`, e);
+        failedDecks++;
+      }
     }
-    setMetaStatus(i + 1, otherFiles.length, `Downloading other: ${asset.field}`);
-  }
 
-  if (totalCards === 0 && otherDone === 0) {
-    resetMetaStatus();
-    showToast('Could not download any files.', 'error');
-    return;
-  }
+    // 2. Yield other files via streaming
+    for (let i = 0; i < otherFiles.length; i++) {
+      const asset = otherFiles[i];
+      const shortUrl = asset.url.split('/').pop() || `other_${i}`;
+      const extMatch = asset.url.match(/\.([a-z0-9]{2,7})(\?|$)/i);
+      const fallbackExt = extMatch ? extMatch[1].toLowerCase() : 'bin';
+      const baseFilename = `other_${String(i + 1).padStart(3, '0')}_${asset.field}_${shortUrl.slice(0, 40).replace(/[^\p{L}\p{N}._-]/gu, '_')}`;
 
-  setMetaStatus(otherFiles.length, otherFiles.length, 'Generating ZIP file...');
-  
-  const manifest = [
-    'Steam Workshop Extractor — Cut & Others Manifest',
-    '================================================',
-    `Total cut cards : ${totalCards}`,
-    `Failed decks    : ${failedDecks}`,
-    '',
-    `Other files total : ${otherFiles.length}`,
-    `Other downloaded  : ${otherDone}`,
-    `Other skipped     : ${skipped.length}`,
-    '',
-    '--- Other Files Downloaded ---',
-    ...otherFiles
-      .filter(a => !skipped.includes(a.url))
-      .map(a => `[${a.field}] ${a.url}`),
-    '',
-    ...(skipped.length > 0 ? [
-      '--- Other Files Skipped (CORS blocked or error) ---',
-      ...skipped
-    ] : [])
-  ].join('\n');
-  zip.file('manifest.txt', manifest);
+      setMetaStatus(i, otherFiles.length, `Streaming other: ${asset.field} (${i + 1}/${otherFiles.length})`);
+
+      try {
+        let res = null;
+        const candidates = [asset.url, ...CORS_PROXIES.map(p => p(asset.url))];
+        for (const tryUrl of candidates) {
+          try {
+            const tryRes = await fetch(tryUrl, { signal: AbortSignal.timeout(15000) });
+            if (tryRes.ok) { res = tryRes; break; }
+          } catch {}
+        }
+
+        if (res && res.body) {
+          const reader = res.body.getReader();
+          const { value: firstChunk, done: readerDone } = await reader.read();
+
+          let realExt = fallbackExt;
+          if (firstChunk && firstChunk.length >= 12) {
+            realExt = detectExtensionFromBytes(firstChunk, fallbackExt);
+          }
+
+          const stream = new ReadableStream({
+            async start(controller) {
+              if (firstChunk) controller.enqueue(firstChunk);
+              if (readerDone) controller.close();
+            },
+            async pull(controller) {
+              try {
+                const { value, done } = await reader.read();
+                if (done) controller.close();
+                else controller.enqueue(value);
+              } catch(e) {
+                controller.error(e);
+              }
+            },
+            cancel(reason) {
+              reader.cancel(reason);
+            }
+          });
+
+          yield {
+            name: `${baseFilename}.${realExt}`,
+            lastModified: new Date(),
+            input: stream
+          };
+          otherDone++;
+        } else {
+          skipped.push({ field: asset.field, url: asset.url, reason: 'Fetch failed (CORS blocked)' });
+        }
+      } catch (e) {
+        skipped.push({ field: asset.field, url: asset.url, reason: e.message });
+      }
+      setMetaStatus(i + 1, otherFiles.length);
+    }
+
+    // 3. Manifest
+    const manifest = [
+      'Steam Workshop Extractor — Cut & Others Manifest',
+      '================================================',
+      `Total cut cards : ${totalCards}`,
+      `Failed decks    : ${failedDecks}`,
+      '',
+      `Other files total : ${otherFiles.length}`,
+      `Other downloaded  : ${otherDone}`,
+      `Other skipped     : ${skipped.length}`,
+      '',
+      '--- Other Files Downloaded ---',
+      ...otherFiles.filter(a => !skipped.some(s => s.url === a.url)).map(a => `[${a.field}] ${a.url}`),
+      '',
+      '--- Skipped (open these manually) ---',
+      ...skipped.map(s => `[${s.field}] ${s.url}  // ${s.reason}`),
+    ];
+    yield { name: 'manifest.txt', lastModified: new Date(), input: manifest.join('\n') };
+
+    if (skipped.length > 0) {
+      const skippedTxt = [
+        '--- SKIPPED FILES ---',
+        'These files could not be downloaded automatically (likely blocked by CORS).',
+        'You can open these URLs manually in your browser and save them.',
+        '',
+        ...skipped.map(s => `[${s.field}] ${s.url}  // Error: ${s.reason}`)
+      ];
+      yield { name: '!skipped.txt', lastModified: new Date(), input: skippedTxt.join('\n') };
+    }
+  }
 
   try {
-    await triggerZipDownload(zip, 'cut_and_others');
-    const msg = `Saved ${totalCards} cards & ${otherDone} other files.`;
+    const writable = await fileHandle.createWritable();
+    setMetaStatus(0, 0, 'Generating ZIP Stream...');
+    const response = downloadZip(yieldFiles());
+    await response.body.pipeTo(writable);
+
+    const msg = `Streaming complete. ${totalCards} cards & ${otherDone} other files.`;
     showToast(msg + (skipped.length > 0 ? ` (${skipped.length} skipped)` : ''), 'success');
   } catch (e) {
-    showToast('ZIP generation error: ' + e.message, 'error');
+    showToast('ZIP Streaming Error: ' + e.message, 'error');
   }
 
   resetMetaStatus();
