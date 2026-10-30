@@ -155,12 +155,27 @@ async function fetchFromUrl() {
         });
     }
 
+    // Add localization files (uk, ru, en) if site theme URL is known
+    const siteThemeMatch = htmlText.match(/g_themeurl\s*=\s*['"]([^'"]+)['"]/) ||
+                           htmlText.match(/(https:\/\/x\.boardgamearena\.net\/data\/themereleases\/\d{6}-\d{4}\/)/);
+    const siteThemeUrl = siteThemeMatch ? siteThemeMatch[1] : null;
+    if (siteThemeUrl && gameId) {
+        for (const [code, label] of [['uk', 'Ukrainian'], ['ru', 'Russian'], ['en', 'English']]) {
+            allAssets.push({
+                url: `${siteThemeUrl}js/modules/nls/${code}/lang_${gameId}.js`,
+                field: `Texts (${label})`,
+                type: 'text',
+                lang: code
+            });
+        }
+    }
+
     // Deduplicate just in case
     const uniqueAssetsMap = new Map();
     allAssets.forEach(a => uniqueAssetsMap.set(a.url, a));
     allAssets = Array.from(uniqueAssetsMap.values());
 
-    currentBgaMeta = { gameName, bgaId, gameId };
+    currentBgaMeta = { gameName, bgaId, gameId, siteThemeUrl };
     renderResults({ gameName, bgaId, input, thumbUrl: uniqueAssetsMap.get(`https://x.boardgamearena.net/data/gamemedia/${gameId}/box/en_280.png`)?.url });
 
   } catch (e) {
@@ -372,8 +387,187 @@ function typeLabel(type) {
     switch (type) {
       case 'image': return 'IMAGE';
       case 'css': return 'CSS';
+      case 'text': return 'LANG';
       default: return type.toUpperCase();
     }
+}
+
+// Parses a BGA AMD i18n bundle `define({ ... })` into a key->value object.
+function parseBgaLangBundle(rawText) {
+  if (!rawText) return null;
+  const start = rawText.indexOf('{');
+  const end = rawText.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  try {
+    return JSON.parse(rawText.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+// Formats localization bundles (uk, ru, en) into readable text files and adds them to the ZIP.
+async function appendTranslatedTextsToZip(zip, setStatus) {
+  const langAssets = allAssets.filter(a => a.type === 'text' && a.lang);
+  if (langAssets.length === 0) return 0;
+
+  const dicts = {};
+  for (const asset of langAssets) {
+    if (zipCancelled) break;
+    if (setStatus) setStatus(`Downloading texts (${asset.lang.toUpperCase()})...`);
+    try {
+      const raw = await fetchHtmlWithCorsProxy(asset.url);
+      const parsed = parseBgaLangBundle(raw);
+      if (parsed && Object.keys(parsed).length > 0) {
+        dicts[asset.lang] = parsed;
+      }
+    } catch (e) {
+      console.warn(`Could not fetch lang bundle ${asset.lang}:`, e);
+    }
+  }
+
+  const loadedLangs = Object.keys(dicts);
+  if (loadedLangs.length === 0) return 0;
+
+  // Collect all unique English source keys across loaded bundles
+  const allKeysSet = new Set();
+  loadedLangs.forEach(lang => {
+    Object.keys(dicts[lang]).forEach(k => {
+      if (k) allKeysSet.add(k);
+    });
+  });
+  const allKeys = [...allKeysSet].sort((a, b) => a.localeCompare(b));
+
+  // 1. Individual language files: texts_uk.txt, texts_ru.txt, texts_en.txt
+  let filesAdded = 0;
+  for (const lang of ['uk', 'ru', 'en']) {
+    const dict = dicts[lang];
+    if (!dict) continue;
+    const lines = [
+      `BGA Game Texts — ${currentBgaMeta.gameName || ''} [${lang.toUpperCase()}]`,
+      '====================================================================',
+      `Total strings: ${allKeys.length}`,
+      ''
+    ];
+    for (const key of allKeys) {
+      const val = (dict[key] !== undefined && dict[key] !== '') ? dict[key] : key;
+      if (lang === 'en' || val === key) {
+        lines.push(val);
+      } else {
+        lines.push(`${key}  ==>  ${val}`);
+      }
+    }
+    zip.file(`texts_${lang}.txt`, lines.join('\n'));
+    filesAdded++;
+  }
+
+  // 2. Combined parallel table: texts_uk_ru_en.txt
+  const combinedLines = [
+    `BGA Game Texts (EN / UK / RU) — ${currentBgaMeta.gameName || ''}`,
+    '====================================================================',
+    `Total strings: ${allKeys.length}`,
+    ''
+  ];
+  for (const key of allKeys) {
+    const enVal = dicts.en?.[key] || key;
+    const ukVal = dicts.uk?.[key] || '';
+    const ruVal = dicts.ru?.[key] || '';
+    combinedLines.push(`[EN] ${enVal}`);
+    if (ukVal) combinedLines.push(`[UK] ${ukVal}`);
+    if (ruVal) combinedLines.push(`[RU] ${ruVal}`);
+    combinedLines.push('');
+  }
+  zip.file('texts_uk_ru_en.txt', combinedLines.join('\n'));
+  filesAdded++;
+
+  // 3. CSV tables for Photoshop Data-Driven Graphics (UTF-8 with BOM)
+  const csvEscape = val => {
+    const s = String(val ?? '').replace(/\r?\n/g, ' ');
+    if (/[",]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const stripHtml = val => String(val ?? '')
+    .replace(/<br\s*\/?>/gi, ' / ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const csvHeader = [
+    'id',
+    'key',
+    'text_en',
+    'text_uk',
+    'text_ru',
+    'clean_en',
+    'clean_uk',
+    'clean_ru'
+  ].join(',');
+
+  const csvRows = [csvHeader];
+  allKeys.forEach((key, idx) => {
+    const enVal = dicts.en?.[key] || key;
+    const ukVal = dicts.uk?.[key] || enVal;
+    const ruVal = dicts.ru?.[key] || enVal;
+    csvRows.push([
+      idx + 1,
+      csvEscape(key),
+      csvEscape(enVal),
+      csvEscape(ukVal),
+      csvEscape(ruVal),
+      csvEscape(stripHtml(enVal)),
+      csvEscape(stripHtml(ukVal)),
+      csvEscape(stripHtml(ruVal))
+    ].join(','));
+  });
+
+  // Prepend UTF-8 BOM (\uFEFF) so Photoshop and Excel read Cyrillic properly
+  zip.file('texts_uk_ru_en.csv', '\uFEFF' + csvRows.join('\r\n'));
+  filesAdded++;
+
+  // 4. Deck-slices template CSV (if sprite decks were detected) for mapping image files in Photoshop
+  const decks = typeof cutterDecks !== 'undefined' ? cutterDecks : [];
+  if (decks.length > 0) {
+    const cardsCsvHeader = ['card_index', 'deck_name', 'type_arg', 'image_file', 'back_file', 'name_en', 'name_uk', 'name_ru', 'type_uk', 'effect_uk'].join(',');
+    const cardsCsvRows = [cardsCsvHeader];
+    let globalIdx = 1;
+    const nameCounts = new Map();
+    let cumulativeTypeArg = 0;
+    let prevPrefix = '';
+
+    for (const deck of decks) {
+      const rawName = deck.deckName || `deck_${deck.deckKey}`;
+      let safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
+      const count = (nameCounts.get(safeName) || 0) + 1;
+      nameCounts.set(safeName, count);
+      if (count > 1) safeName = `${safeName}(${count})`;
+
+      const prefix = rawName.replace(/-\d+$/, '');
+      if (prefix !== prevPrefix) {
+        cumulativeTypeArg = 0;
+        prevPrefix = prefix;
+      }
+
+      const faceSuffix = (deck.backUrl && deck.backUrl === deck.faceUrl) ? 'back_face' : 'face';
+      const backExt = (deck.backUrl.match(/\.([a-z0-9]{2,5})(\?|$)/i)?.[1] || 'jpg').toLowerCase();
+      const backFilename = deck.backUrl ? `${safeName}_back.${backExt}` : '';
+
+      for (let i = 1; i <= deck.totalSlots; i++) {
+        cumulativeTypeArg++;
+        const imgFilename = `${safeName}_${String(i).padStart(3, '0')}_${faceSuffix}.png`;
+        cardsCsvRows.push([
+          globalIdx++,
+          csvEscape(safeName),
+          cumulativeTypeArg,
+          csvEscape(imgFilename),
+          csvEscape(backFilename),
+          '', '', '', '', ''
+        ].join(','));
+      }
+    }
+    zip.file('cards_template.csv', '\uFEFF' + cardsCsvRows.join('\r\n'));
+    filesAdded++;
+  }
+
+  return filesAdded;
 }
 
 function escHtml(str) {
@@ -552,6 +746,8 @@ async function downloadImagesZip() {
   ];
   zip.file('manifest.txt', manifest.join('\n'));
 
+  await appendTranslatedTextsToZip(zip, msg => { statusEl.textContent = msg; });
+
   statusEl.textContent = 'Generating ZIP file...';
   fillEl.style.width = '100%';
 
@@ -679,7 +875,7 @@ async function downloadCutAndOthersZip() {
   }
 
   // 2. Download all remaining files (images + CSS) not part of cut decks
-  const otherFiles = allAssets.filter(a => !deckUrls.has(a.url));
+  const otherFiles = allAssets.filter(a => a.type !== 'text' && !deckUrls.has(a.url));
   for (let i = 0; i < otherFiles.length; i++) {
     if (zipCancelled) break;
     const asset    = otherFiles[i];
@@ -742,12 +938,15 @@ async function downloadCutAndOthersZip() {
     return;
   }
 
+  const textsAdded = await appendTranslatedTextsToZip(zip, msg => { statusEl.textContent = msg; });
+
   const manifest = [
     'BGA Extractor — Cut Decks & Other Files Manifest',
     '================================================',
     `Total cut cards   : ${totalCards}`,
     `Decks cut         : ${decks.length - failedDecks} / ${decks.length}`,
     `Other files saved : ${otherDone} / ${otherFiles.length}`,
+    `Text files saved  : ${textsAdded}`,
     `Skipped           : ${skipped.length}`,
     '',
     '--- Cut Decks ---',
