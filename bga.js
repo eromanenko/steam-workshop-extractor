@@ -7,6 +7,8 @@
 
 // ─── State ───────────────────────────────────────────────────
 let allAssets = [];
+let currentBgaMeta = { gameName: 'BGA_Game', bgaId: null };
+let bgaCutterData = null;
 
 // ─── CORS-aware Fetcher ───────────────────────────────────────
 const CORS_PROXIES = [
@@ -62,7 +64,9 @@ async function fetchFromUrl() {
     
     // Extract g_gamethemeurl
     const inputGameId = (input.match(/[?&]game=([^&#]+)/) || htmlText.match(/g_gamename\s*=\s*['"]([^'"]+)['"]/))?.[1];
-    let catalogDisplayName = null;
+    const catalogInfo = inputGameId ? findGameInCatalog(htmlText, inputGameId) : null;
+    const catalogDisplayName = catalogInfo?.displayName || null;
+    const bgaId = catalogInfo?.id || input.match(/[?&](?:tutorial|table|id)=([0-9]+)/)?.[1] || inputGameId || null;
     let gameThemeUrl;
     const themeUrlMatch = htmlText.match(/g_gamethemeurl\s*=\s*['"]([^'"]+)['"]/);
     if (themeUrlMatch) {
@@ -70,12 +74,10 @@ async function fetchFromUrl() {
     } else {
       // Fallback: BGA sometimes serves the main-site SPA shell (no game globals).
       // It embeds a game catalog JSON: {"id":2450,"name":"reforest","display_name_en":"Reforest","version":"260210-1342",...}
-      const info = inputGameId && findGameInCatalog(htmlText, inputGameId);
-      if (!info) {
+      if (!catalogInfo) {
         throw new Error('Could not find g_gamethemeurl or game version in the page source. This might not be a valid game or tutorial page.');
       }
-      catalogDisplayName = info.displayName;
-      gameThemeUrl = `https://x.boardgamearena.net/data/themereleases/current/games/${inputGameId}/${info.version}/`;
+      gameThemeUrl = `https://x.boardgamearena.net/data/themereleases/current/games/${inputGameId}/${catalogInfo.version}/`;
     }
     
     // Extract g_img_preload
@@ -131,13 +133,15 @@ async function fetchFromUrl() {
         type: 'css'
     });
 
-    // Parse the game CSS for image references (covers pages without g_img_preload)
+    // Parse the game CSS for image references and sprite grids (covers pages without g_img_preload)
     setLoading('Parsing game CSS...');
+    bgaCutterData = null;
     try {
         const cssText = await fetchHtmlWithCorsProxy(cssUrl);
         extractCssImageUrls(cssText, cssUrl).forEach(url => {
             allAssets.push({ url, field: 'Game Asset (CSS)', type: 'image' });
         });
+        bgaCutterData = extractCssDecks(cssText, cssUrl);
     } catch (e) {
         console.warn('Failed to fetch/parse game CSS', e);
     }
@@ -156,7 +160,8 @@ async function fetchFromUrl() {
     allAssets.forEach(a => uniqueAssetsMap.set(a.url, a));
     allAssets = Array.from(uniqueAssetsMap.values());
 
-    renderResults({ gameName, input, thumbUrl: uniqueAssetsMap.get(`https://x.boardgamearena.net/data/gamemedia/${gameId}/box/en_280.png`)?.url });
+    currentBgaMeta = { gameName, bgaId, gameId };
+    renderResults({ gameName, bgaId, input, thumbUrl: uniqueAssetsMap.get(`https://x.boardgamearena.net/data/gamemedia/${gameId}/box/en_280.png`)?.url });
 
   } catch (e) {
     console.error(e);
@@ -165,17 +170,23 @@ async function fetchFromUrl() {
 }
 
 // ─── Parsing Helpers ──────────────────────────────────────────
-// Finds a game entry in BGA's embedded catalog JSON and returns its version.
+// Finds a game entry in BGA's embedded catalog JSON and returns its version, id, and display name.
 function findGameInCatalog(htmlText, gameId) {
   const esc = gameId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`"name"\\s*:\\s*"${esc}"`, 'g');
   let m;
   while ((m = re.exec(htmlText))) {
-    const chunk = htmlText.slice(m.index, m.index + 400);
+    const start = Math.max(0, m.index - 80);
+    const chunk = htmlText.slice(start, m.index + 400);
     const version = chunk.match(/"version"\s*:\s*"(\d{6}-\d{4})"/);
     if (version) {
       const display = chunk.match(/"display_name_en"\s*:\s*"([^"]*)"/);
-      return { version: version[1], displayName: display ? display[1] : null };
+      const idMatch = chunk.match(/"id"\s*:\s*(\d+)/);
+      return {
+        id: idMatch ? idMatch[1] : null,
+        version: version[1],
+        displayName: display ? display[1] : null
+      };
     }
   }
   return null;
@@ -193,6 +204,121 @@ function extractCssImageUrls(cssText, cssUrl) {
     try { urls.add(new URL(raw, cssUrl).href); } catch {}
   }
   return [...urls];
+}
+
+// Parses CSS sprite rules and constructs a CustomDeck-compatible tree for cutter.js.
+function extractCssDecks(cssText, cssUrl) {
+  const sheets = new Map(); // absUrl -> { xPcts: Set, yPcts: Set, sizeW: number, sizeH: number, typeName: string }
+  const typeBacks = new Map(); // typeName -> absBackUrl
+  let currentUrl = null;
+  let currentType = null;
+
+  const ruleRe = /([^{}]+)\{([^{}]+)\}/g;
+  let rm;
+  while ((rm = ruleRe.exec(cssText))) {
+    const selector = rm[1].trim();
+    const body = rm[2];
+
+    const typeMatch = selector.match(/data-type\s*=\s*['"]?([a-z0-9_-]+)['"]?/i);
+    const hasArg = /data-type-arg/i.test(selector);
+
+    const urlMatch = body.match(/background(?:-image)?\s*:[^;]*url\(\s*(['"]?)([^'")]+)\1\s*\)/i);
+    if (urlMatch) {
+      const raw = urlMatch[2].trim();
+      if (!raw.startsWith('data:') && /\.(png|jpe?g|gif|webp|bmp)(\?|#|$)/i.test(raw)) {
+        try {
+          const absUrl = new URL(raw, cssUrl).href;
+          if (typeMatch && !hasArg && (/back/i.test(raw) || /cover|100%/i.test(body))) {
+            typeBacks.set(typeMatch[1].toLowerCase(), absUrl);
+          }
+          currentUrl = absUrl;
+          currentType = typeMatch ? typeMatch[1].toLowerCase() : null;
+          if (!sheets.has(absUrl)) {
+            sheets.set(absUrl, { xPcts: new Set(), yPcts: new Set(), sizeW: 0, sizeH: 0, typeName: currentType });
+          } else if (currentType && !sheets.get(absUrl).typeName) {
+            sheets.get(absUrl).typeName = currentType;
+          }
+        } catch {}
+      }
+    }
+
+    const targetUrl = currentUrl;
+    if (!targetUrl || !sheets.has(targetUrl)) continue;
+    const info = sheets.get(targetUrl);
+
+    const sizeMatch = body.match(/background-size\s*:\s*([0-9.]+)%?(?:\s+([0-9.]+)%)?/i);
+    if (sizeMatch && body.includes('%')) {
+      const sw = Math.round(parseFloat(sizeMatch[1]) / 100);
+      const sh = sizeMatch[2] ? Math.round(parseFloat(sizeMatch[2]) / 100) : 0;
+      if (sw > info.sizeW) info.sizeW = sw;
+      if (sh > info.sizeH) info.sizeH = sh;
+    }
+
+    const posMatch = body.match(/background-position\s*:\s*([0-9.]+)%?\s+([0-9.]+)%?/i);
+    if (posMatch) {
+      const x = parseFloat(posMatch[1]);
+      const y = parseFloat(posMatch[2]);
+      if (!isNaN(x) && x >= 0 && x <= 100) info.xPcts.add(Math.round(x * 100) / 100);
+      if (!isNaN(y) && y >= 0 && y <= 100) info.yPcts.add(Math.round(y * 100) / 100);
+    }
+  }
+
+  function inferGridCount(pcts, sizeCount) {
+    if (sizeCount > 1) return sizeCount;
+    const sorted = [...pcts].sort((a, b) => a - b);
+    if (sorted.length <= 1) return 1;
+    let minStep = 100;
+    for (let i = 1; i < sorted.length; i++) {
+      const d = sorted[i] - sorted[i - 1];
+      if (d > 0.5 && d < minStep) minStep = d;
+    }
+    const steps = Math.round(100 / minStep);
+    return Math.max(sorted.length, steps + 1);
+  }
+
+  const decks = [];
+  let keyIdx = 1;
+  for (const [url, info] of sheets.entries()) {
+    const numWidth = inferGridCount(info.xPcts, info.sizeW);
+    const numHeight = inferGridCount(info.yPcts, info.sizeH);
+    if (numWidth * numHeight <= 1) continue; // skip non-sprite single images
+
+    const fileBase = url.split('/').pop().replace(/\.[a-z0-9]+(\?.*)?$/i, '');
+    let backUrl = (info.typeName && typeBacks.get(info.typeName)) || '';
+    if (!backUrl) {
+      // Heuristic: look for a *-back.* asset matching the prefix
+      for (const candidate of sheets.keys()) {
+        if (/back/i.test(candidate) && candidate !== url) {
+          const prefix = fileBase.replace(/-\d+$/, '');
+          if (candidate.includes(prefix)) { backUrl = candidate; break; }
+        }
+      }
+    }
+
+    decks.push({
+      Nickname: fileBase,
+      CustomDeck: {
+        [String(keyIdx++)]: {
+          FaceURL: url,
+          BackURL: backUrl,
+          NumWidth: numWidth,
+          NumHeight: numHeight,
+          UniqueBack: false
+        }
+      }
+    });
+  }
+
+  return { ObjectStates: decks };
+}
+
+function getBgaZipFilename(suffix) {
+  const safeName = (currentBgaMeta.gameName || 'BGA_Game')
+    .replace(/[^\p{L}\p{N}_-]/gu, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 40);
+  const idTag = currentBgaMeta.bgaId ? `_[bga${currentBgaMeta.bgaId}]` : '';
+  return `${safeName}_${suffix}${idTag}.zip`;
 }
 
 // ─── Render Results ───────────────────────────────────────────
@@ -215,7 +341,7 @@ function renderResults(meta) {
   renderAssets();
 
   // Initialize cutter if available
-  if (typeof initCutter === 'function') initCutter();
+  if (typeof initCutter === 'function') initCutter(bgaCutterData);
 
   showSection('results');
 }
@@ -225,8 +351,10 @@ function updateActionBar(imageCount, totalCount) {
   const zipCountEl = document.getElementById('zip-count');
   const zipBtn     = document.getElementById('download-zip-btn');
   const zipLabel   = document.getElementById('zip-btn-label');
+  const cutZipBtn  = document.getElementById('download-cut-zip-btn');
   if (zipCountEl) zipCountEl.textContent = imageCount;
   if (zipBtn)     zipBtn.disabled = imageCount === 0;
+  if (cutZipBtn)  cutZipBtn.disabled = totalCount === 0;
   if (zipLabel)   zipLabel.textContent = imageCount > 0 ? 'Download Images (ZIP)' : 'No images found';
 
   refreshOpenAllCount();
@@ -431,7 +559,7 @@ async function downloadImagesZip() {
     const zipBlob  = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
     const a        = document.createElement('a');
     a.href         = URL.createObjectURL(zipBlob);
-    a.download     = `BGA_Assets.zip`;
+    a.download     = getBgaZipFilename('images');
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -443,6 +571,211 @@ async function downloadImagesZip() {
   } catch (e) {
     overlay.classList.add('hidden');
     zipBtn.disabled = false;
+    showToast('ZIP generation error: ' + e.message, 'error');
+  }
+}
+
+async function downloadCutAndOthersZip() {
+  if (allAssets.length === 0) return;
+
+  zipCancelled = false;
+  const overlay    = document.getElementById('zip-overlay');
+  const statusEl   = document.getElementById('zip-status');
+  const fillEl     = document.getElementById('zip-progress-fill');
+  const progressEl = document.getElementById('zip-progress-text');
+  const zipBtn     = document.getElementById('download-zip-btn');
+  const cutZipBtn  = document.getElementById('download-cut-zip-btn');
+
+  overlay.classList.remove('hidden');
+  if (zipBtn)    zipBtn.disabled = true;
+  if (cutZipBtn) cutZipBtn.disabled = true;
+
+  const zip = new JSZip();
+  const skipped = [];
+  let totalCards = 0;
+  let failedDecks = 0;
+  let otherDone = 0;
+
+  const setProgress = (i, total, msg) => {
+    const pct = total > 0 ? Math.round((i / total) * 100) : 0;
+    fillEl.style.width     = pct + '%';
+    progressEl.textContent = total > 0 ? `${i} / ${total}` : '';
+    if (msg) statusEl.textContent = msg;
+  };
+
+  const decks = typeof cutterDecks !== 'undefined' ? cutterDecks : [];
+  const deckUrls = new Set();
+  decks.forEach(d => {
+    if (d.faceUrl) deckUrls.add(d.faceUrl);
+    if (d.backUrl) deckUrls.add(d.backUrl);
+  });
+
+  // 1. Cut all detected sprite decks
+  const nameCounts = new Map();
+  for (let dIdx = 0; dIdx < decks.length; dIdx++) {
+    if (zipCancelled) break;
+    const deck = decks[dIdx];
+    const rawName = deck.deckName || `deck_${deck.deckKey}`;
+    let safeName = rawName.replace(/[^\p{L}\p{N}_\-]/gu, '_').replace(/_+/g, '_').slice(0, 40);
+    const count = (nameCounts.get(safeName) || 0) + 1;
+    nameCounts.set(safeName, count);
+    if (count > 1) safeName = `${safeName}(${count})`;
+
+    setProgress(dIdx, decks.length, `Cutting deck: ${rawName} (${dIdx + 1}/${decks.length})`);
+
+    try {
+      let faceBlob = null;
+      const candidates = [deck.faceUrl, ...CORS_PROXIES.map(p => p.url(deck.faceUrl))];
+      for (const tryUrl of candidates) {
+        if (zipCancelled) break;
+        try {
+          const res = await fetch(tryUrl, { signal: AbortSignal.timeout(15000) });
+          if (res.ok) { faceBlob = await res.blob(); break; }
+        } catch {}
+      }
+      if (!faceBlob) throw new Error('Failed to fetch face sheet');
+
+      const faceSuffix = (deck.backUrl && deck.backUrl === deck.faceUrl) ? 'back_face' : 'face';
+      const faceCards = await sliceImageToCards(faceBlob, deck);
+      for (const { canvas, index } of faceCards) {
+        if (zipCancelled) break;
+        zip.file(`${safeName}_${String(index + 1).padStart(3, '0')}_${faceSuffix}.png`, await canvasToBlob(canvas));
+        totalCards++;
+      }
+
+      if (deck.backUrl && deck.backUrl !== deck.faceUrl && !zipCancelled) {
+        setProgress(dIdx, decks.length, `Adding back: ${rawName}…`);
+        let backBlob = null;
+        const backCandidates = [deck.backUrl, ...CORS_PROXIES.map(p => p.url(deck.backUrl))];
+        for (const tryUrl of backCandidates) {
+          if (zipCancelled) break;
+          try {
+            const res = await fetch(tryUrl, { signal: AbortSignal.timeout(15000) });
+            if (res.ok) { backBlob = await res.blob(); break; }
+          } catch {}
+        }
+        if (backBlob) {
+          if (deck.totalSlots === 1 || !deck.uniqueBack) {
+            const ext = await getRealExtension(backBlob, deck.backUrl);
+            zip.file(`${safeName}_back.${ext}`, backBlob);
+            totalCards++;
+          } else {
+            const backCards = await sliceImageToCards(backBlob, deck);
+            for (const { canvas, index } of backCards) {
+              if (zipCancelled) break;
+              zip.file(`${safeName}_${String(index + 1).padStart(3, '0')}_back.png`, await canvasToBlob(canvas));
+              totalCards++;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`Failed to cut deck ${deck.deckKey}:`, e);
+      failedDecks++;
+      // If cutting failed, allow its raw URLs to be downloaded in otherFiles
+      if (deck.faceUrl) deckUrls.delete(deck.faceUrl);
+      if (deck.backUrl) deckUrls.delete(deck.backUrl);
+    }
+  }
+
+  // 2. Download all remaining files (images + CSS) not part of cut decks
+  const otherFiles = allAssets.filter(a => !deckUrls.has(a.url));
+  for (let i = 0; i < otherFiles.length; i++) {
+    if (zipCancelled) break;
+    const asset    = otherFiles[i];
+    const shortUrl = asset.url.split('/').pop() || `file_${i}`;
+    const extMatch = asset.url.match(/\.([a-z0-9]{2,7})(\?|$)/i);
+    const fallbackExt = extMatch ? extMatch[1].toLowerCase() : (asset.type === 'css' ? 'css' : 'png');
+    const baseName = shortUrl.replace(/\.[a-z0-9]{2,7}(\?.*)?$/i, '').slice(0, 40).replace(/[^\p{L}\p{N}_-]/gu, '_');
+    const baseFilename = `other_${String(i + 1).padStart(3, '0')}_${baseName}`;
+
+    setProgress(i, otherFiles.length, `Downloading: ${shortUrl} (${i + 1}/${otherFiles.length})`);
+
+    try {
+      let blob = null;
+      const candidates = [asset.url, ...CORS_PROXIES.map(p => p.url(asset.url))];
+      for (const tryUrl of candidates) {
+        if (zipCancelled) break;
+        try {
+          const res = await fetch(tryUrl, { signal: AbortSignal.timeout(15000) });
+          if (res.ok) { blob = await res.blob(); break; }
+        } catch {}
+      }
+
+      if (blob && blob.size > 0) {
+        let realExt = fallbackExt;
+        if (asset.type !== 'css') {
+          const buffer = await blob.arrayBuffer();
+          const view = new Uint8Array(buffer.slice(0, 12));
+          if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) realExt = 'png';
+          else if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) realExt = 'jpg';
+          else if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46 &&
+                   view.length >= 12 && view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) realExt = 'webp';
+        }
+        zip.file(`${baseFilename}.${realExt}`, blob);
+        otherDone++;
+      } else {
+        skipped.push({ url: asset.url, reason: 'Fetch failed (CORS blocked)' });
+      }
+    } catch (e) {
+      skipped.push({ url: asset.url, reason: e.message });
+    }
+
+    setProgress(i + 1, otherFiles.length);
+  }
+
+  const restoreBtns = () => {
+    overlay.classList.add('hidden');
+    if (zipBtn)    zipBtn.disabled = false;
+    if (cutZipBtn) cutZipBtn.disabled = false;
+  };
+
+  if (zipCancelled) {
+    restoreBtns();
+    showToast('Download cancelled', 'error');
+    return;
+  }
+
+  if (totalCards === 0 && otherDone === 0) {
+    restoreBtns();
+    showToast('Could not download any files (CORS?).', 'error');
+    return;
+  }
+
+  const manifest = [
+    'BGA Extractor — Cut Decks & Other Files Manifest',
+    '================================================',
+    `Total cut cards   : ${totalCards}`,
+    `Decks cut         : ${decks.length - failedDecks} / ${decks.length}`,
+    `Other files saved : ${otherDone} / ${otherFiles.length}`,
+    `Skipped           : ${skipped.length}`,
+    '',
+    '--- Cut Decks ---',
+    ...decks.map(d => `[${d.deckName} (${d.numWidth}x${d.numHeight})] Face: ${d.faceUrl}${d.backUrl ? ' | Back: ' + d.backUrl : ''}`),
+    '',
+    '--- Other Files ---',
+    ...otherFiles.filter(a => !skipped.some(s => s.url === a.url)).map(a => `[OK] ${a.url}`),
+    ...skipped.map(s => `[SKIP] ${s.url}  // ${s.reason}`)
+  ];
+  zip.file('manifest.txt', manifest.join('\n'));
+
+  statusEl.textContent = 'Generating ZIP file...';
+  fillEl.style.width = '100%';
+
+  try {
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+    const a       = document.createElement('a');
+    a.href        = URL.createObjectURL(zipBlob);
+    a.download    = getBgaZipFilename('cut_and_others');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+
+    restoreBtns();
+    showToast(`Saved ${totalCards} cut cards & ${otherDone} other files to ZIP`, 'success');
+  } catch (e) {
+    restoreBtns();
     showToast('ZIP generation error: ' + e.message, 'error');
   }
 }

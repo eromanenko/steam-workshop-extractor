@@ -37,7 +37,7 @@
           </svg>
         </div>
         <div class="logo-text">
-          <span class="logo-title">BGA Extractor <span class="version-tag">v1.1.3</span></span>
+          <span class="logo-title">BGA Extractor <span class="version-tag">v1.2.0</span></span>
           <span class="logo-sub">Board Game Arena</span>
         </div>
       </div>
@@ -176,6 +176,15 @@
             </svg>
             <span id="zip-btn-label">Download All (ZIP)</span>
             <span class="zip-count" id="zip-count">0</span>
+          </button>
+          <button class="download-zip-btn" id="download-cut-zip-btn" onclick="downloadCutAndOthersZip()"
+            style="background: var(--bg-card-2); color: var(--text-primary); border: 1px solid var(--accent-1);">
+            <svg viewBox="0 0 20 20" fill="none">
+              <circle cx="5" cy="5" r="2" stroke="currentColor" stroke-width="1.4" />
+              <circle cx="5" cy="15" r="2" stroke="currentColor" stroke-width="1.4" />
+              <path d="M7 6.5L17 12M7 13.5L17 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+            <span id="cut-zip-btn-label">Download Cut Decks &amp; Other Files</span>
           </button>
           <button class="open-all-btn" id="open-all-btn" onclick="openAllFiltered()">
             <svg viewBox="0 0 20 20" fill="none">
