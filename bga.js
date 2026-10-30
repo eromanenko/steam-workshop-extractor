@@ -61,11 +61,22 @@ async function fetchFromUrl() {
     setLoading('Parsing assets...');
     
     // Extract g_gamethemeurl
+    const inputGameId = (input.match(/[?&]game=([^&#]+)/) || htmlText.match(/g_gamename\s*=\s*['"]([^'"]+)['"]/))?.[1];
+    let catalogDisplayName = null;
+    let gameThemeUrl;
     const themeUrlMatch = htmlText.match(/g_gamethemeurl\s*=\s*['"]([^'"]+)['"]/);
-    if (!themeUrlMatch) {
-      throw new Error('Could not find g_gamethemeurl in the page source. This might not be a valid game or tutorial page.');
+    if (themeUrlMatch) {
+      gameThemeUrl = themeUrlMatch[1]; // e.g. https://x.boardgamearena.net/data/themereleases/current/games/allinpredictions/260506-1558/
+    } else {
+      // Fallback: BGA sometimes serves the main-site SPA shell (no game globals).
+      // It embeds a game catalog JSON: {"id":2450,"name":"reforest","display_name_en":"Reforest","version":"260210-1342",...}
+      const info = inputGameId && findGameInCatalog(htmlText, inputGameId);
+      if (!info) {
+        throw new Error('Could not find g_gamethemeurl or game version in the page source. This might not be a valid game or tutorial page.');
+      }
+      catalogDisplayName = info.displayName;
+      gameThemeUrl = `https://x.boardgamearena.net/data/themereleases/current/games/${inputGameId}/${info.version}/`;
     }
-    const gameThemeUrl = themeUrlMatch[1]; // e.g. https://x.boardgamearena.net/data/themereleases/current/games/allinpredictions/260506-1558/
     
     // Extract g_img_preload
     const preloadMatch = htmlText.match(/g_img_preload\s*=\s*(\[[^\]]+\])/);
@@ -89,7 +100,9 @@ async function fetchFromUrl() {
         gameIdMatch = htmlText.match(/g_gamename\s*=\s*['"]([^'"]+)['"]/);
     }
     
-    if (gameIdMatch) {
+    if (catalogDisplayName) {
+        gameName = catalogDisplayName;
+    } else if (gameIdMatch) {
         gameName = gameIdMatch[1];
     } else {
         const titleMatch = htmlText.match(/<title>([^<]+)<\/title>/);
@@ -111,18 +124,22 @@ async function fetchFromUrl() {
 
     // Add CSS file as an asset just in case user wants to parse it manually
     const cssMatch = htmlText.match(new RegExp(`href=['"]([^'"]+${gameId}\\.css(\\?.*?)?)['"]`));
-    if (cssMatch) {
-        allAssets.push({
-            url: cssMatch[1],
-            field: 'CSS (Sprite Map)',
-            type: 'css'
+    const cssUrl = cssMatch ? cssMatch[1] : `${gameThemeUrl}${gameId}.css`;
+    allAssets.push({
+        url: cssUrl,
+        field: 'CSS (Sprite Map)',
+        type: 'css'
+    });
+
+    // Parse the game CSS for image references (covers pages without g_img_preload)
+    setLoading('Parsing game CSS...');
+    try {
+        const cssText = await fetchHtmlWithCorsProxy(cssUrl);
+        extractCssImageUrls(cssText, cssUrl).forEach(url => {
+            allAssets.push({ url, field: 'Game Asset (CSS)', type: 'image' });
         });
-    } else {
-        allAssets.push({
-            url: `${gameThemeUrl}${gameId}.css`,
-            field: 'CSS (Sprite Map)',
-            type: 'css'
-        });
+    } catch (e) {
+        console.warn('Failed to fetch/parse game CSS', e);
     }
 
     // Try to add the box image if we know the gameId
@@ -145,6 +162,37 @@ async function fetchFromUrl() {
     console.error(e);
     showError('Failed to load page', e.message);
   }
+}
+
+// ─── Parsing Helpers ──────────────────────────────────────────
+// Finds a game entry in BGA's embedded catalog JSON and returns its version.
+function findGameInCatalog(htmlText, gameId) {
+  const esc = gameId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`"name"\\s*:\\s*"${esc}"`, 'g');
+  let m;
+  while ((m = re.exec(htmlText))) {
+    const chunk = htmlText.slice(m.index, m.index + 400);
+    const version = chunk.match(/"version"\s*:\s*"(\d{6}-\d{4})"/);
+    if (version) {
+      const display = chunk.match(/"display_name_en"\s*:\s*"([^"]*)"/);
+      return { version: version[1], displayName: display ? display[1] : null };
+    }
+  }
+  return null;
+}
+
+// Extracts absolute image URLs referenced via url(...) in a CSS file.
+function extractCssImageUrls(cssText, cssUrl) {
+  const urls = new Set();
+  const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
+  let m;
+  while ((m = re.exec(cssText))) {
+    const raw = m[2].trim();
+    if (raw.startsWith('data:')) continue;
+    if (!/\.(png|jpe?g|gif|webp|svg|bmp)(\?|#|$)/i.test(raw)) continue;
+    try { urls.add(new URL(raw, cssUrl).href); } catch {}
+  }
+  return [...urls];
 }
 
 // ─── Render Results ───────────────────────────────────────────
